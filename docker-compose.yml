@@ -1,0 +1,138 @@
+services:
+  db:
+    profiles:
+      [
+        "db",
+        "prisma-migrate",
+        "backend",
+        "frontend",
+        "backend-build",
+        "frontend-build",
+      ]
+    container_name: hamina-shared-db
+    build:
+      context: ./packages/database/prisma
+      dockerfile: Dockerfile
+    ports:
+      - "3762:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  prisma-migrate:
+    profiles: ["prisma-migrate"]
+    container_name: hamina-prisma-migrate
+    build:
+      context: .
+      dockerfile: ./packages/database/Dockerfile.web
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - DIRECT_DATABASE_URL=${DIRECT_DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      - APP_SOURCE_NAME=${APP_SOURCE_NAME:-unknown}
+    depends_on:
+      - db
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "npm install && sh ./scripts/wait-db.sh && npm run db:migrate --workspace @repo/db && npm run db:generate --workspace @repo/db"
+
+  backend:
+    profiles: ["backend"]
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile.dev
+    container_name: hamina-backend
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      PORT: 4000
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./apps/backend:/app/apps/backend
+      - ./packages:/app/packages
+      - ./scripts:/app/scripts
+      - ./package-lock.json:/app/package-lock.json
+      - ./package.json:/app/package.json
+      - ./turbo.json:/app/turbo.json
+      - /app/node_modules
+
+  frontend:
+    profiles: ["frontend"]
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile.dev
+    container_name: hamina-frontend
+    working_dir: /app/apps/frontend
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      NODE_ENV: development
+      BACKEND_INTERNAL_URL: http://backend:4000
+      NEXT_PUBLIC_BACKEND_URL: http://backend:4000
+    volumes:
+      - ./apps/frontend:/app/apps/frontend
+      - ./packages:/app/packages
+      - ./scripts:/app/scripts
+      - ./package-lock.json:/app/package-lock.json
+      - ./package.json:/app/package.json
+      - ./turbo.json:/app/turbo.json
+      - /app/node_modules
+
+  backend-build:
+    profiles: ["backend-build"]
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    container_name: hamina-backend-build
+    ports:
+      - "4100:4000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
+      PORT: 4000
+    depends_on:
+      db:
+        condition: service_healthy
+      prisma-migrate:
+        condition: service_completed_successfully
+
+  frontend-build:
+    profiles: ["frontend-build"]
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    container_name: hamina-frontend-build
+    ports:
+      - "3100:3000"
+    depends_on:
+      backend-build:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      BACKEND_INTERNAL_URL: http://backend-build:4000
+      NEXT_PUBLIC_BACKEND_URL: http://backend-build:4000
+
+volumes:
+  postgres_data:

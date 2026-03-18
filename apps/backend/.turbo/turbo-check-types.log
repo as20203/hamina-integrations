@@ -1,0 +1,4 @@
+
+> backend@0.1.0 check-types
+> tsc -p tsconfig.json --noEmit
+

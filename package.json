@@ -1,0 +1,32 @@
+{
+  "name": "hamina-integrations-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.2.4",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "dev:frontend": "turbo run dev --filter=frontend --",
+    "dev:backend": "turbo run dev --filter=backend",
+    "db:generate": "turbo run db:generate",
+    "db:migrate": "turbo run db:migrate",
+    "db:deploy": "turbo run db:deploy",
+    "docker:migrate": "docker compose --profile prisma-migrate run --rm prisma-migrate",
+    "docker:dev": "docker compose --profile db --profile backend --profile frontend up --build",
+    "docker:build": "docker compose --profile db --profile prisma-migrate --profile backend-build --profile frontend-build up --build",
+    "lint": "turbo run lint",
+    "check-types": "turbo run check-types",
+    "start:frontend": "npm run start --workspace frontend",
+    "start:backend": "npm run start --workspace backend"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

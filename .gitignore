@@ -1,0 +1,6 @@
+test-folder/
+node_modules/
+apps/*/node_modules/
+apps/*/.next/
+dist/
+.DS_Store

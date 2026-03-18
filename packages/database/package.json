@@ -1,0 +1,27 @@
+{
+  "name": "@repo/db",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts"
+  },
+  "prisma": {
+    "schema": "./prisma/schema"
+  },
+  "scripts": {
+    "db:generate": "node -r dotenv/config $(which prisma) generate",
+    "db:migrate": "node -r dotenv/config $(which prisma) migrate dev",
+    "db:deploy": "node -r dotenv/config $(which prisma) migrate deploy"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.0.1",
+    "@prisma/client": "^7.0.1",
+    "dotenv": "^16.4.7",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.6",
+    "prisma": "^7.0.1"
+  }
+}

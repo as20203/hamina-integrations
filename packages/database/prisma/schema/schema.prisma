@@ -1,0 +1,9 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  // url can be provided through prisma.config.ts datasource env binding.
+}

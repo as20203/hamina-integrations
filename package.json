@@ -5,7 +5,8 @@
   "packageManager": "npm@10.2.4",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "packages/ts-shared/*"
   ],
   "scripts": {
     "build": "turbo run build",

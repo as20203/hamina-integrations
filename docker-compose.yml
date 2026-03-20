@@ -3,6 +3,7 @@ services:
     profiles:
       [
         "db",
+        "hamina",
         "prisma-migrate",
         "backend",
         "frontend",
@@ -32,7 +33,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   prisma-migrate:
-    profiles: ["prisma-migrate"]
+    profiles: ["prisma-migrate", "hamina"]
     container_name: hamina-prisma-migrate
     build:
       context: .
@@ -49,7 +50,7 @@ services:
     command: sh -c "npm install && sh ./scripts/wait-db.sh && npm run db:migrate --workspace @repo/db && npm run db:generate --workspace @repo/db"
 
   backend:
-    profiles: ["backend"]
+    profiles: ["backend", "hamina"]
     build:
       context: .
       dockerfile: apps/backend/Dockerfile.dev
@@ -74,7 +75,7 @@ services:
       - /app/node_modules
 
   frontend:
-    profiles: ["frontend"]
+    profiles: ["frontend", "hamina"]
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile.dev

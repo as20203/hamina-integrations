@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Button } from "@repo/ui/components/button";
 
 type HelloRecord = {
   id: number;
@@ -62,19 +63,19 @@ const HomePage = () => {
   };
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: "2rem" }}>
-      <h1>Hello from frontend</h1>
-      <p>Monorepo app is running.</p>
+    <main className="mx-auto max-w-2xl space-y-4 p-8">
+      <h1 className="text-2xl font-bold">Hello from frontend</h1>
+      <p className="text-muted-foreground">Monorepo app is running.</p>
       <p>Backend says: {backendMessage}</p>
-      <button onClick={createHelloRecord} disabled={isCreatingRecord}>
+      <Button onClick={createHelloRecord} disabled={isCreatingRecord}>
         {isCreatingRecord ? "Creating..." : "Create HelloRecord"}
-      </button>
+      </Button>
       {latestRecord && (
-        <pre style={{ marginTop: "1rem" }}>
+        <pre className="rounded-md border bg-muted p-3 text-xs">
           {JSON.stringify(latestRecord, null, 2)}
         </pre>
       )}
-      {error && <p style={{ color: "red" }}>Error: {error}</p>}
+      {error && <p className="text-sm text-red-600">Error: {error}</p>}
     </main>
   );
 };

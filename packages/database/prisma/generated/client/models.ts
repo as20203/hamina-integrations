@@ -8,5 +8,5 @@
  *
  * 🟢 You can import this file directly.
  */
-export type * from './models/HelloRecord.ts'
-export type * from './commonInputTypes.ts'
+export type * from './models/HelloRecord'
+export type * from './commonInputTypes'

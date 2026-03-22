@@ -276,6 +276,7 @@ flowchart TD
 - **Client statistics** for wireless access points — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** (BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site when filtering by AP)
 - **Site summaries** with device counts and status
 - **Real-time device monitoring** with connection status
+- **How site table Status is determined** (merge, inventory enrichment, `resolveRowStatus`) — see [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown)
 
 ### Performance & Reliability
 - **Rate limiting**: Every **`mistFetch`** waits for capacity under rolling **per-minute** (default 300, `MIST_MAX_REQUESTS_PER_MINUTE`) and **per-hour** (default 5000, `MIST_MAX_REQUESTS_PER_HOUR`) caps plus **10** concurrent requests; aligns with typical Mist org quotas.
@@ -517,7 +518,120 @@ Redis cache with intelligent fallback:
 - **PostgreSQL** for application data
 - **Nginx** (optional) for production reverse proxy
 
+## Site device status: Connected, Disconnected, and Unknown
+
+This section describes how the **Status** column on `/site/[siteId]` is filled end to end: Mist REST → backend merge and enrichment → APIs the dashboard calls → table resolution. **Live stats (SSE/WebSocket) does not set Status**; it only updates other columns when enabled (see [Future improvements](#future-improvements)).
+
+### Pipeline overview
+
+| Step | Where | Input | Output |
+|------|--------|--------|--------|
+| 1 | Mist API | `GET /api/v1/sites/{siteId}/stats/devices` | AP-centric stats rows (often with link/connection fields). |
+| 2 | Mist API | Paginated `GET /api/v1/sites/{siteId}/devices` (`type=ap` + `type=switch`) | Full site catalog rows (AP + switch). |
+| 3 | Backend [`buildMergedDevices`](apps/backend/src/services/mist.service.ts) | Stats + catalog | `MistDeviceDetail[]`: stats rows merged with matching catalog by device key; devices only on catalog appended. Each row: `normalizeDevice(stats, config?)` → `toDeviceStatus(merged raw)`. |
+| 4 | Backend [`enrichUnknownStatusFromOrgInventory`](apps/backend/src/services/mist.service.ts) | Merged list | If any row has `status === "unknown"`, load `GET /api/v1/orgs/{orgId}/inventory?site_id=…` via [`getOrgInventory`](apps/backend/src/services/mist.service.ts), match by **id** then **normalized MAC**, set `connected` / `disconnected` from inventory. On failure, returns list unchanged. |
+| 5 | Express | `GET /api/v1/mist/sites/:siteId/devices` | `getDeviceList` → merged + enriched list (cached under `mist:merged:devices:v2`). |
+| 6 | Express | `GET /api/v1/mist/sites/:siteId/devices-catalog` | Catalog summaries only (no enrichment); drives table rows and pagination. |
+| 7 | Browser | Dashboard `fetch` | Parallel: `site-summary`, `devices-catalog`, `devices` (merged). |
+| 8 | Frontend [`resolveRowStatus`](apps/frontend/src/components/mist/mist-devices-table.tsx) | Per row: catalog + `mergedById` + optional inventory | Final `MistDeviceStatus` for the **Status** badge. |
+
+### Backend: merge logic (`buildMergedDevices`)
+
+| Branch | Behavior |
+|--------|----------|
+| Stats non-empty | For each stats row, find same-key catalog row, `normalizeDevice(stats, config)`. Append `normalizeDevice(device)` for catalog-only rows (typical **switches** not present in stats). |
+| Stats empty | Every catalog row → `normalizeDevice(device)` only. |
+
+`normalizeDevice` builds `{ ...config, ...stats }` and sets `status: toDeviceStatus(merged)` (see next table).
+
+### Backend: `toDeviceStatus` (Mist row → `connected` \| `disconnected` \| `unknown`)
+
+Implemented in [`mist.service.ts`](apps/backend/src/services/mist.service.ts) (`toDeviceStatus`, `truthyConnection`). Examples of fields considered (not exhaustive):
+
+| Kind | Mist-style fields (booleans/strings normalized) |
+|------|--------------------------------------------------|
+| Booleans | `connected`, `device_connected`, `deviceConnected`, `cloud_connected`, `lan_connected`, `l2tp_connected`, `wan_up`; `disabled === true` → disconnected. |
+| String blobs | `status`, `connection_status`, `conn_status`, `device_status`, `cloud_connection_state`, `wan_status`, `oper_state`, `operational_state` — substrings like `connected`, `up`, `online` vs `disconnected`, `down`, `offline`. |
+
+If nothing matches → **`unknown`** (common for switches on raw site `/devices` when Mist omits link state).
+
+### Backend: org inventory enrichment
+
+Runs only when at least one merged device is still `unknown`. Calls Mist **`GET /api/v1/orgs/{orgId}/inventory`** with `site_id`, `limit=1000`, `page=1`. Matching: **device id** first, else **MAC** after `normalizeMacForMatch` (hex only, lowercased).
+
+```ts
+// apps/backend/src/services/mist.service.ts — enrichUnknownStatusFromOrgInventory (excerpt)
+// Early exit if no unknowns; try/catch returns `devices` unchanged on inventory failure.
+const { devices: inv } = await getOrgInventory({ siteId, limit: 1000, page: 1 });
+const byId = new Map(inv.map((r) => [r.id, r]));
+// ...byMac keyed by normalizeMacForMatch(r.mac)...
+return devices.map((d) => {
+  if (d.status !== "unknown") return d;
+  const invRow =
+    byId.get(d.id) ??
+    (d.mac && normalizeMacForMatch(d.mac).length >= 6 ? byMac.get(normalizeMacForMatch(d.mac)) : undefined);
+  if (!invRow) return d;
+  return { ...d, status: invRow.connected ? "connected" : "disconnected" };
+});
+```
+
+Used by **`getDeviceList`**, **`getDeviceDetail`** (list lookup), and **`getSiteSummary`** so summary cards and merged API stay aligned.
+
+### Backend: site summary metric cards (`getSiteSummary`)
+
+| Counter | Rule |
+|---------|------|
+| `byType.*.connected` | `device.status === "connected"` |
+| `byType.*.disconnected` | Everything else (`disconnected`, `unknown`, or post-enrichment offline) so switches without explicit “up” still count as offline on cards. |
+
+### Frontend: dashboard data sources
+
+| Request | Purpose | Status relevance |
+|---------|---------|------------------|
+| `GET /api/mist/sites/{siteId}/devices-catalog` | Table row list (names, ids, catalog `status`) | `catalog.status` from same `toDeviceStatus` normalization on catalog payloads. |
+| `GET /api/mist/sites/{siteId}/devices` | Full merged + **server-enriched** details | `merged.status` preferred in the table when not `unknown`. |
+| `GET /api/mist/sites/{siteId}/site-summary` | Metric cards | Uses same enriched list as above. |
+| `GET /api/mist/inventory?siteId=…` (from table `useEffect`) | Extra row data | Supplies `inventory.connected` when merged/catalog are still `unknown`. |
+
+### Frontend: `resolveRowStatus` (Status badge)
+
+First match wins:
+
+| Priority | Source | Condition |
+|----------|--------|-----------|
+| 1 | Merged device | `merged.status` exists and is not `unknown`. |
+| 2 | Catalog row | `catalog.status` is not `unknown`. |
+| 3 | Org inventory | Row matched by id/MAC in client fetch → `inventory.connected` → `connected` / `disconnected`. |
+| 4 | — | `unknown` (Unknown badge). |
+
+```tsx
+// apps/frontend/src/components/mist/mist-devices-table.tsx
+const resolveRowStatus = (
+  catalog: MistDeviceSummary,
+  merged: MistDeviceDetail | undefined,
+  inventory: InventoryDevice | undefined
+): MistDeviceStatus => {
+  if (merged?.status && merged.status !== "unknown") return merged.status;
+  if (catalog.status !== "unknown") return catalog.status;
+  if (inventory) return inventory.connected ? "connected" : "disconnected";
+  return "unknown";
+};
+```
+
+### AP vs switch in practice
+
+| Device type | Typical path to Connected/Disconnected |
+|-------------|----------------------------------------|
+| **AP** | Often present in `/stats/devices` → merge sets status from stats + `toDeviceStatus`. |
+| **Switch** | Often **only** on site `/devices` → `toDeviceStatus` may return `unknown` until **backend enrichment** (inventory) or **frontend inventory** match fills it. |
+
+---
+
 ## Future improvements
+
+- **Mist live device stats (SSE + WebSocket)** — The site dashboard (`/site/[siteId]`) can enable **Stream live stats**, which opens same-origin SSE (`GET /api/mist/sites/.../devices-stats/stream` → Express → Mist WebSocket `wss://…/api-ws/v1/stream`, subscribe `/sites/{siteId}/stats/devices`). Implementation: hub [`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts), BFF proxy `apps/frontend/src/app/api/mist/sites/[siteId]/devices-stats/stream/route.ts`, hook [`use-mist-device-stats-stream.ts`](apps/frontend/src/hooks/use-mist-device-stats-stream.ts), table merge in [`mist-devices-table.tsx`](apps/frontend/src/components/mist/mist-devices-table.tsx). **Good E2E checklist:** (1) open a site with APs, toggle live stats, confirm badge goes to “Live stats on” and AP rows update **Last seen / IP / Clients / Connection** when Mist pushes data; (2) stop live stats and confirm SSE closes and backend hub tears down the WS when the last subscriber leaves; (3) try a **regional** org — set `MIST_WS_BASE_URL` if REST is not `api.mist.com` (see [`getMistWsBaseUrl`](apps/backend/src/lib/mist/config.ts)). **Reliability work (connection sometimes fails):** add retries/backoff around initial WS connect, surface hub `stream_status` (`reconnecting` / `error`) in the UI with last error text, consider heartbeat/timeouts vs Mist’s behavior, and optionally add Playwright coverage that mocks upstream or asserts the stream toggle + degraded UI when the backend returns non-200 for the SSE route.
+
+- **Site device table — Status** — Fully documented in [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown) (merge, enrichment, `resolveRowStatus`, summary cards).
 
 - **Load and rate-limit stress tests** — Add tooling (for example k6, Artillery, or distributed Playwright workers) to simulate **many concurrent users** hitting BFF and Express Mist routes, then observe **Redis cache hit rates**, **BullMQ depth**, **429 / queue enqueue behavior**, and **SSE fan-out** under the configured limits (see [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts)). Run against a non-production Mist org or mocked upstream so org API quotas stay safe.
 

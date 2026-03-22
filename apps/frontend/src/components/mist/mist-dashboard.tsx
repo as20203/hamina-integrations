@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   MistDeviceDetail,
@@ -20,7 +20,7 @@ import {
 } from "@repo/ui/components/select";
 import { Pagination } from "@repo/ui/shared/pagination";
 import { cn } from "@repo/ui/lib/utils";
-import { Activity, ArrowLeft, RefreshCw } from "lucide-react";
+import { Activity, ArrowLeft, Info, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { MistDevicesTable } from "./mist-devices-table";
 import { MistMetricCards } from "./mist-metric-cards";
@@ -62,6 +62,8 @@ const streamBadgeLabel = (status: string): string => {
 const MistDashboard = ({ siteId }: MistDashboardProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const siteDevicesInfoRef = useRef<HTMLDivElement>(null);
+  const [siteDevicesInfoOpen, setSiteDevicesInfoOpen] = useState(false);
   const [liveStreamOn, setLiveStreamOn] = useState(false);
   const { liveByMac, streamStatus } = useMistDeviceStatsStream(siteId, liveStreamOn);
 
@@ -130,6 +132,29 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     void fetchData();
   }, [fetchData]);
 
+  useEffect(() => {
+    if (!siteDevicesInfoOpen) {
+      return;
+    }
+    const onPointerDown = (e: PointerEvent) => {
+      const el = siteDevicesInfoRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setSiteDevicesInfoOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSiteDevicesInfoOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [siteDevicesInfoOpen]);
+
   const mergedById = useMemo(() => {
     const m = new Map<string, MistDeviceDetail>();
     for (const d of mergedDevices) {
@@ -175,13 +200,37 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
           </Link>
         </Button>
       </div>
-      <div>
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Site devices</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          The table loads from Mist <code className="text-xs">GET /api/v1/sites/…/devices</code> (paginated AP + switch) and
-          merged REST for fallback fields.           Use <strong>Stream live stats</strong> above the summary cards for an optional SSE feed that updates live table
-          columns only — it does not load the device list.
-        </p>
+        <div ref={siteDevicesInfoRef} className="relative shrink-0 pt-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 rounded-full border-dashed text-muted-foreground shadow-sm hover:text-foreground"
+            aria-expanded={siteDevicesInfoOpen}
+            aria-controls="site-devices-info-panel"
+            aria-label="How site devices and live stats load"
+            onClick={() => setSiteDevicesInfoOpen((o) => !o)}
+          >
+            <Info className="h-4 w-4" aria-hidden />
+          </Button>
+          {siteDevicesInfoOpen ? (
+            <div
+              id="site-devices-info-panel"
+              role="note"
+              className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-[min(calc(100vw-2rem),28rem)] rounded-xl border bg-popover p-4 text-sm leading-relaxed text-popover-foreground shadow-lg ring-1 ring-border/60"
+            >
+              <p className="text-muted-foreground">
+                The table loads from Mist{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">GET /api/v1/sites/…/devices</code>{" "}
+                (paginated AP + switch) and merged REST for fallback fields. Use{" "}
+                <strong className="font-medium text-foreground">Stream live stats</strong> above the summary cards for an
+                optional SSE feed that updates live table columns only — it does not load the device list.
+              </p>
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <MistMetricCards

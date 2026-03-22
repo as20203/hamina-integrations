@@ -27,3 +27,19 @@ export type MistSiteSummary = {
     unknown: { total: number; connected: number; disconnected: number };
   };
 };
+
+export type MistSiteLatLng = {
+  lat?: number;
+  lng?: number;
+};
+
+export type MistOrgSite = {
+  id: string;
+  name: string;
+  address?: string;
+  country_code?: string;
+  timezone?: string;
+  latlng?: MistSiteLatLng;
+  org_id?: string;
+  notes?: string;
+};

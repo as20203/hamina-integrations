@@ -10,7 +10,12 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 const sidebarNav = [
-  { href: "/mist", label: "Site devices", icon: LayoutGrid, match: (p: string) => p === "/mist" || p.startsWith("/mist/") },
+  {
+    href: "/sites",
+    label: "Org sites",
+    icon: LayoutGrid,
+    match: (p: string) => p === "/sites" || p.startsWith("/site/"),
+  },
 ] as const;
 
 const SidebarNavLinks = ({ onNavigate }: { onNavigate?: () => void }) => {
@@ -50,7 +55,7 @@ const AppSidebar = () => {
     <>
       <aside className="fixed left-0 top-0 z-30 hidden h-screen w-[230px] flex-col border-r bg-card lg:flex">
         <div className="border-b px-6 py-6">
-          <Link href="/mist" className="block">
+          <Link href="/sites" className="block">
             <div className="text-xl font-bold tracking-tight text-foreground">Hamina</div>
             <div className="text-sm font-medium text-muted-foreground">Integrations</div>
           </Link>
@@ -73,7 +78,7 @@ const AppSidebar = () => {
           </SheetTrigger>
           <SheetContent side="left" className="w-[min(100vw,280px)] p-0">
             <div className="border-b px-6 py-6">
-              <Link href="/mist" className="block" onClick={() => setMobileOpen(false)}>
+              <Link href="/sites" className="block" onClick={() => setMobileOpen(false)}>
                 <div className="text-xl font-bold tracking-tight">Hamina</div>
                 <div className="text-sm text-muted-foreground">Integrations</div>
               </Link>

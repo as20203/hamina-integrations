@@ -12,7 +12,7 @@ docker compose --profile db --profile backend --profile frontend build --no-cach
 ```txt
 .
 ├── apps
-│   ├── frontend        # Next.js — Mist site UI (`/mist`, `@/components/mist`, BFF under `app/api/mist`)
+│   ├── frontend        # Next.js — Mist UI (`/sites` org list, `/site/[id]`, BFF `app/api/mist`)
 │   └── backend         # Express — `/health`, `/api/v1/mist/*`
 ├── packages
 │   ├── database        # Prisma (@repo/db)
@@ -40,7 +40,7 @@ npm run dev:frontend
 
 Then open:
 
-- Frontend: [http://localhost:3000](http://localhost:3000) (redirects to `/mist`)
+- Frontend: [http://localhost:3000](http://localhost:3000) (`/` redirects to `/sites`; `/mist` redirects to `/sites`)
 - Backend: [http://localhost:4000](http://localhost:4000) (`/health` only; no demo JSON routes)
 
 ## Docker
@@ -96,6 +96,7 @@ POSTGRES_DB=postgres
 MIST_API_KEY=
 MIST_API_BASE_URL=https://api.mist.com
 MIST_ORG_ID=
+# Optional dev fallback when calling site-scoped APIs without a path `siteId`
 MIST_SITE_ID=
 ```
 

@@ -4,11 +4,11 @@ const getBackendBaseUrl = (): string => {
   return process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://backend:4000";
 };
 
-export const GET = async (request: NextRequest) => {
+export const GET = async (request: NextRequest, context: { params: Promise<{ siteId: string }> }) => {
   try {
+    const { siteId } = await context.params;
     const type = request.nextUrl.searchParams.get("type") || "";
     const status = request.nextUrl.searchParams.get("status") || "";
-
     const query = new URLSearchParams();
     if (type) {
       query.set("type", type);
@@ -16,12 +16,14 @@ export const GET = async (request: NextRequest) => {
     if (status) {
       query.set("status", status);
     }
-
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    const response = await fetch(`${getBackendBaseUrl()}/api/v1/mist/devices${suffix}`, {
-      method: "GET",
-      cache: "no-store",
-    });
+    const response = await fetch(
+      `${getBackendBaseUrl()}/api/v1/mist/sites/${encodeURIComponent(siteId)}/devices${suffix}`,
+      {
+        method: "GET",
+        cache: "no-store",
+      }
+    );
     const data = (await response.json()) as unknown;
     return NextResponse.json(data, { status: response.status });
   } catch (error) {

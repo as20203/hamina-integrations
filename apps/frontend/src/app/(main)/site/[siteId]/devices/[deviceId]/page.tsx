@@ -1,12 +1,12 @@
-import { MistDevicePage } from "./mist-device-page";
+import { MistSiteDevicePage } from "./mist-site-device-page";
 import { Suspense } from "react";
 
-const DeviceRoutePage = () => {
+const SiteDeviceRoutePage = () => {
   return (
     <Suspense fallback={<div className="py-8 text-sm text-muted-foreground">Loading device…</div>}>
-      <MistDevicePage />
+      <MistSiteDevicePage />
     </Suspense>
   );
 };
 
-export default DeviceRoutePage;
+export default SiteDeviceRoutePage;

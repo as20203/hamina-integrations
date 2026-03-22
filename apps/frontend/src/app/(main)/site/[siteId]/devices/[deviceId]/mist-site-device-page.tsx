@@ -9,24 +9,33 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
-const MistDevicePage = () => {
-  const params = useParams<{ deviceId: string }>();
+const MistSiteDevicePage = () => {
+  const params = useParams<{ siteId: string; deviceId: string }>();
   const searchParams = useSearchParams();
+  const siteId = decodeURIComponent(params.siteId ?? "").trim();
   const id = decodeURIComponent(params.deviceId ?? "");
   const [device, setDevice] = useState<MistDeviceDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const backHref = `/mist${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
+  const backHref = `/site/${encodeURIComponent(siteId)}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`;
 
   useEffect(() => {
     let active = true;
 
     const run = async () => {
+      if (!siteId || !id) {
+        setError("Missing site or device id");
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/mist/devices/${encodeURIComponent(id)}`, { cache: "no-store" });
+        const res = await fetch(
+          `/api/mist/sites/${encodeURIComponent(siteId)}/devices/${encodeURIComponent(id)}`,
+          { cache: "no-store" }
+        );
         const json = (await res.json()) as { ok?: boolean; data?: MistDeviceDetail; error?: string };
         if (!res.ok || !json.ok) {
           throw new Error(json.error || "Failed to load device");
@@ -49,7 +58,7 @@ const MistDevicePage = () => {
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, siteId]);
 
   return (
     <div className="space-y-6">
@@ -73,4 +82,4 @@ const MistDevicePage = () => {
   );
 };
 
-export { MistDevicePage };
+export { MistSiteDevicePage };

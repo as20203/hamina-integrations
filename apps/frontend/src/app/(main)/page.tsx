@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 const MainIndexPage = () => {
-  redirect("/mist");
+  redirect("/sites");
 };
 
 export default MainIndexPage;

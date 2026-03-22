@@ -1,4 +1,4 @@
-import { mistFetch } from "../lib/mist/client.js";
+import { mistFetch, mistFetchWithMeta, readPaginationMeta } from "../lib/mist/client.js";
 import { getMistConfig } from "../lib/mist/config.js";
 
 type DeviceTypeFilter = "ap" | "switch";
@@ -117,20 +117,35 @@ const normalizeDevice = (stats: Record<string, unknown>, config?: Record<string,
   return detail;
 };
 
-const fetchSiteStatsDevices = async (): Promise<Record<string, unknown>[]> => {
-  const { siteId } = getMistConfig();
-  const data = await mistFetch<unknown>(`/api/v1/sites/${siteId}/stats/devices`);
+const resolveSiteId = (siteId: string | undefined): string => {
+  const trimmed = siteId?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  const fallback = getMistConfig().siteId;
+  if (fallback) {
+    return fallback;
+  }
+  throw new Error("Missing site id (path param or MIST_SITE_ID)");
+};
+
+const fetchSiteStatsDevices = async (siteId: string): Promise<Record<string, unknown>[]> => {
+  const id = resolveSiteId(siteId);
+  const data = await mistFetch<unknown>(`/api/v1/sites/${id}/stats/devices`);
   return asArray(data);
 };
 
-const fetchSiteDevices = async (): Promise<Record<string, unknown>[]> => {
-  const { siteId } = getMistConfig();
-  const data = await mistFetch<unknown>(`/api/v1/sites/${siteId}/devices`);
+const fetchSiteDevices = async (siteId: string): Promise<Record<string, unknown>[]> => {
+  const id = resolveSiteId(siteId);
+  const data = await mistFetch<unknown>(`/api/v1/sites/${id}/devices`);
   return asArray(data);
 };
 
-const buildMergedDevices = async (): Promise<MistDeviceDetail[]> => {
-  const [statsDevices, siteDevices] = await Promise.all([fetchSiteStatsDevices(), fetchSiteDevices()]);
+const buildMergedDevices = async (siteId: string): Promise<MistDeviceDetail[]> => {
+  const [statsDevices, siteDevices] = await Promise.all([
+    fetchSiteStatsDevices(siteId),
+    fetchSiteDevices(siteId),
+  ]);
   const byKey = new Map<string, Record<string, unknown>>();
   siteDevices.forEach((device) => {
     const key = getDeviceKey(device);
@@ -164,8 +179,35 @@ const filterDevices = (
   });
 };
 
-const getSiteSummary = async (): Promise<SiteSummary> => {
-  const devices = await buildMergedDevices();
+type MistOrgSite = Record<string, unknown>;
+
+const getOrgSites = async (
+  limit: number,
+  page: number
+): Promise<{ sites: MistOrgSite[]; meta: { total: number; page: number; limit: number } }> => {
+  const { orgId } = getMistConfig();
+  const safeLimit = Math.max(1, Math.min(500, limit));
+  const safePage = Math.max(1, page);
+  const { data, headers } = await mistFetchWithMeta<unknown[]>(
+    `/api/v1/orgs/${orgId}/sites`,
+    {
+      limit: String(safeLimit),
+      page: String(safePage),
+    }
+  );
+
+  const list = Array.isArray(data) ? data.map(asRecord) : [];
+  const meta = readPaginationMeta(headers, safePage, safeLimit);
+  const total = meta.total > 0 ? meta.total : list.length;
+
+  return {
+    sites: list,
+    meta: { total, page: safePage, limit: safeLimit },
+  };
+};
+
+const getSiteSummary = async (siteId: string): Promise<SiteSummary> => {
+  const devices = await buildMergedDevices(siteId);
   const summary: SiteSummary = {
     totalDevices: devices.length,
     byType: {
@@ -188,15 +230,19 @@ const getSiteSummary = async (): Promise<SiteSummary> => {
   return summary;
 };
 
-const getDeviceList = async (type?: DeviceTypeFilter, status?: DeviceStatusFilter): Promise<MistDeviceDetail[]> => {
-  const devices = await buildMergedDevices();
+const getDeviceList = async (
+  siteId: string,
+  type?: DeviceTypeFilter,
+  status?: DeviceStatusFilter
+): Promise<MistDeviceDetail[]> => {
+  const devices = await buildMergedDevices(siteId);
   return filterDevices(devices, type, status);
 };
 
-const getDeviceDetail = async (deviceId: string): Promise<MistDeviceDetail | null> => {
-  const devices = await buildMergedDevices();
+const getDeviceDetail = async (siteId: string, deviceId: string): Promise<MistDeviceDetail | null> => {
+  const devices = await buildMergedDevices(siteId);
   return devices.find((device) => device.id === deviceId) || null;
 };
 
-export { getSiteSummary, getDeviceList, getDeviceDetail };
-export type { MistDeviceDetail, DeviceTypeFilter, DeviceStatusFilter, SiteSummary };
+export { getOrgSites, getSiteSummary, getDeviceList, getDeviceDetail };
+export type { MistDeviceDetail, DeviceTypeFilter, DeviceStatusFilter, SiteSummary, MistOrgSite };

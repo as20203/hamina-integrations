@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { DeviceStatusBadge } from "./device-status-badge";
 
 type MistDevicesTableProps = {
+  siteId: string;
   devices: MistDeviceSummary[];
 };
 
@@ -17,14 +18,16 @@ const typeLabel = (t: MistDeviceType) => {
   return "Unknown";
 };
 
-const MistDevicesTable = ({ devices }: MistDevicesTableProps) => {
+const MistDevicesTable = ({ siteId, devices }: MistDevicesTableProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const backQs = searchParams.toString();
 
   const go = (id: string) => {
     const q = backQs ? `?${backQs}` : "";
-    router.push(`/mist/${encodeURIComponent(id)}${q}`);
+    router.push(
+      `/site/${encodeURIComponent(siteId)}/devices/${encodeURIComponent(id)}${q}`
+    );
   };
 
   return (

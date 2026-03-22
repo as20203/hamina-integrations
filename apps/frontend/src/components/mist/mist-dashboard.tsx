@@ -12,12 +12,18 @@ import {
   SelectValue,
 } from "@repo/ui/components/select";
 import { Pagination } from "@repo/ui/shared/pagination";
+import { ArrowLeft } from "lucide-react";
+import Link from "next/link";
 import { MistDevicesTable } from "./mist-devices-table";
 import { MistMetricCards } from "./mist-metric-cards";
 
-const ITEMS_PER_PAGE = 12;
+const ITEMS_PER_PAGE = 10;
 
-const MistDashboard = () => {
+type MistDashboardProps = {
+  siteId: string;
+};
+
+const MistDashboard = ({ siteId }: MistDashboardProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [summary, setSummary] = useState<MistSiteSummary | null>(null);
@@ -29,6 +35,8 @@ const MistDashboard = () => {
   const typeFilter = searchParams.get("type") || "";
   const statusFilter = searchParams.get("status") || "";
 
+  const basePath = `/site/${encodeURIComponent(siteId)}`;
+
   const pushParams = useCallback(
     (updates: Record<string, string | undefined>) => {
       const p = new URLSearchParams(searchParams.toString());
@@ -39,9 +47,9 @@ const MistDashboard = () => {
           p.set(key, value);
         }
       }
-      router.push(`/mist?${p.toString()}`, { scroll: false });
+      router.push(`${basePath}?${p.toString()}`, { scroll: false });
     },
-    [router, searchParams]
+    [basePath, router, searchParams]
   );
 
   const fetchData = useCallback(async () => {
@@ -53,8 +61,8 @@ const MistDashboard = () => {
       if (statusFilter) qs.set("status", statusFilter);
 
       const [sumRes, devRes] = await Promise.all([
-        fetch("/api/mist/site-summary", { cache: "no-store" }),
-        fetch(`/api/mist/devices?${qs}`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/site-summary`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices?${qs}`, { cache: "no-store" }),
       ]);
 
       const sumJson = (await sumRes.json()) as { ok?: boolean; data?: MistSiteSummary; error?: string };
@@ -74,7 +82,7 @@ const MistDashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, typeFilter]);
+  }, [siteId, statusFilter, typeFilter]);
 
   useEffect(() => {
     void fetchData();
@@ -97,10 +105,18 @@ const MistDashboard = () => {
 
   return (
     <div className="space-y-8">
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="outline" size="sm" asChild>
+          <Link href="/sites">
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Org sites
+          </Link>
+        </Button>
+      </div>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Site devices</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Mist AP and switch health for the configured site — select a row to open the device view.
+          Mist AP and switch health for this site — select a row to open the device view.
         </p>
       </div>
 
@@ -150,7 +166,7 @@ const MistDashboard = () => {
         </Button>
       </div>
 
-      <MistDevicesTable devices={pageSlice} />
+      <MistDevicesTable siteId={siteId} devices={pageSlice} />
 
       {devices.length > 0 ? (
         <Pagination
@@ -158,7 +174,7 @@ const MistDashboard = () => {
           totalPages={totalPages}
           total={devices.length}
           paramName="page"
-          baseUrl="/mist"
+          baseUrl={basePath}
           existingParams={existingParams}
         />
       ) : null}

@@ -17,7 +17,7 @@
     "db:migrate": "turbo run db:migrate",
     "db:deploy": "turbo run db:deploy",
     "docker:migrate": "docker compose --profile prisma-migrate run --rm prisma-migrate",
-    "docker:dev": "docker compose --profile db --profile backend --profile frontend up --build",
+    "docker:dev": "docker compose --profile hamina up --build -d",
     "docker:build": "docker compose --profile hamina-build up --build -d",
     "docker:build:legacy": "docker compose --profile db --profile prisma-migrate --profile backend-build --profile frontend-build up --build -d",
     "lint": "turbo run lint",

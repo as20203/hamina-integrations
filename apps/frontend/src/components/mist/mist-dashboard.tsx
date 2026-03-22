@@ -64,6 +64,8 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
   const searchParams = useSearchParams();
   const siteDevicesInfoRef = useRef<HTMLDivElement>(null);
   const [siteDevicesInfoOpen, setSiteDevicesInfoOpen] = useState(false);
+  const liveStreamBetaInfoRef = useRef<HTMLDivElement>(null);
+  const [liveStreamBetaInfoOpen, setLiveStreamBetaInfoOpen] = useState(false);
   const [liveStreamOn, setLiveStreamOn] = useState(false);
   const { liveByMac, streamStatus } = useMistDeviceStatsStream(siteId, liveStreamOn);
 
@@ -155,6 +157,29 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     };
   }, [siteDevicesInfoOpen]);
 
+  useEffect(() => {
+    if (!liveStreamBetaInfoOpen) {
+      return;
+    }
+    const onPointerDown = (e: PointerEvent) => {
+      const el = liveStreamBetaInfoRef.current;
+      if (el && !el.contains(e.target as Node)) {
+        setLiveStreamBetaInfoOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLiveStreamBetaInfoOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [liveStreamBetaInfoOpen]);
+
   const mergedById = useMemo(() => {
     const m = new Map<string, MistDeviceDetail>();
     for (const d of mergedDevices) {
@@ -225,8 +250,8 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
                 The table loads from Mist{" "}
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">GET /api/v1/sites/…/devices</code>{" "}
                 (paginated AP + switch) and merged REST for fallback fields. Use{" "}
-                <strong className="font-medium text-foreground">Stream live stats</strong> above the summary cards for an
-                optional SSE feed that updates live table columns only — it does not load the device list.
+                <strong className="font-medium text-foreground">Stream live stats</strong> (beta) above the summary cards
+                for an optional SSE feed that updates live table columns only — it does not load the device list.
               </p>
             </div>
           ) : null}
@@ -248,6 +273,38 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
               <Activity className={cn("mr-2 h-4 w-4", liveStreamOn && "text-primary-foreground")} aria-hidden />
               {liveStreamOn ? "Stop live stats" : "Stream live stats"}
             </Button>
+            <Badge variant="outline" className="text-xs font-normal text-amber-800 dark:text-amber-200">
+              Beta
+            </Badge>
+            <div ref={liveStreamBetaInfoRef} className="relative">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                aria-expanded={liveStreamBetaInfoOpen}
+                aria-controls="live-stream-beta-info-panel"
+                aria-label="Live stats stream is in beta — details"
+                onClick={() => setLiveStreamBetaInfoOpen((o) => !o)}
+              >
+                <Info className="h-4 w-4" aria-hidden />
+              </Button>
+              {liveStreamBetaInfoOpen ? (
+                <div
+                  id="live-stream-beta-info-panel"
+                  role="note"
+                  className="absolute left-0 top-[calc(100%+0.35rem)] z-50 w-[min(calc(100vw-2rem),22rem)] rounded-xl border bg-popover p-3 text-sm leading-relaxed text-popover-foreground shadow-lg ring-1 ring-border/60"
+                >
+                  <p className="font-medium text-foreground">Live stats (beta)</p>
+                  <p className="mt-2 text-muted-foreground">
+                    This path is still being hardened: Mist WebSocket → backend SSE → your browser can drop or stall,
+                    needs the right regional WS host (<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">MIST_WS_BASE_URL</code>),
+                    and only refreshes a subset of table columns. Treat it as a preview; reliability and UX will improve in
+                    follow-up work.
+                  </p>
+                </div>
+              ) : null}
+            </div>
             {liveStreamOn ? (
               <Badge variant={streamStatus === "connected" ? "secondary" : "outline"} className="text-xs font-normal">
                 {streamBadgeLabel(streamStatus)}

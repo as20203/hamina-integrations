@@ -86,9 +86,11 @@ npm install
 docker compose --profile hamina up --build -d
 
 # Access services
-# Frontend: http://localhost:3000
-# Backend: http://localhost:4000
-# Bull Board: http://localhost:4000/admin/queues (admin/changeme)
+# Frontend: http://localhost:3000 (Mist data via Next.js BFF routes under /api/mist/*)
+# Backend (Express): not published to the host; reachable inside the stack as http://backend:4000
+#   (configured via BACKEND_INTERNAL_URL on the frontend container)
+# Bull Board: only from the Docker network, e.g. exec into frontend/backend and curl http://backend:4000/admin/queues
+#   or temporarily add ports: ["4000:4000"] on the backend service for local debugging
 # Redis: localhost:6381
 ```
 

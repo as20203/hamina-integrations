@@ -21,7 +21,10 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 
 WORKDIR /app
 
-RUN npm install turbo --global
+RUN npm config set fetch-retries 10 \
+  && npm config set fetch-retry-mintimeout 20000 \
+  && npm config set fetch-retry-maxtimeout 120000 \
+  && npm install turbo --global
 
 COPY . .
 
@@ -42,6 +45,11 @@ RUN apk add --no-cache libc6-compat \
     postgresql-client
 
 WORKDIR /app
+
+# Reduce flaky ECONNRESET / aborted installs when the registry drops connections during image builds
+RUN npm config set fetch-retries 10 \
+  && npm config set fetch-retry-mintimeout 20000 \
+  && npm config set fetch-retry-maxtimeout 120000
 
 COPY --from=builder /app/out/json/ .
 RUN npm install --frozen-lockfile

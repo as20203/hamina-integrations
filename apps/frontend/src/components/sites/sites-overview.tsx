@@ -1,18 +1,19 @@
 "use client";
 
 import { SiteCard } from "@/components/sites/site-card";
-import type { MistOrgSite } from "@/types/mist";
+import type { EnhancedSiteInfo, InventoryDevice, InventorySummary, ClientSummary, ApiResponse } from "@/types/mist";
 import { Button } from "@repo/ui/components/button";
 import { Skeleton } from "@repo/ui/components/skeleton";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueueService } from "@/lib/queue/queue-service";
 
 const SITES_LIMIT = 10;
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
-const normalizeSite = (raw: Record<string, unknown>): MistOrgSite | null => {
+const normalizeSite = (raw: Record<string, unknown>): EnhancedSiteInfo | null => {
   const id = String(raw.id ?? "").trim();
   if (!id) {
     return null;
@@ -20,7 +21,7 @@ const normalizeSite = (raw: Record<string, unknown>): MistOrgSite | null => {
   const latlngRaw = asRecord(raw.latlng);
   const lat = typeof latlngRaw.lat === "number" ? latlngRaw.lat : Number(latlngRaw.lat);
   const lng = typeof latlngRaw.lng === "number" ? latlngRaw.lng : Number(latlngRaw.lng);
-  const site: MistOrgSite = {
+  const site: EnhancedSiteInfo = {
     id,
     name: String(raw.name ?? "Unnamed site"),
   };
@@ -46,8 +47,9 @@ const SitesOverview = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const page = Math.max(1, Number(searchParams.get("page") || "1") || 1);
+  const queueService = useQueueService();
 
-  const [sites, setSites] = useState<MistOrgSite[]>([]);
+  const [sites, setSites] = useState<EnhancedSiteInfo[]>([]);
   const [meta, setMeta] = useState<{ total: number; page: number; limit: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,7 +70,7 @@ const SitesOverview = () => {
     const list = Array.isArray(json.data) ? json.data : [];
     const normalized = list
       .map((item) => normalizeSite(asRecord(item)))
-      .filter((s): s is MistOrgSite => s != null);
+      .filter((s): s is EnhancedSiteInfo => s != null);
     const m = json.meta ?? {};
     const limit = typeof m.limit === "number" && m.limit > 0 ? m.limit : SITES_LIMIT;
     const total =
@@ -78,6 +80,73 @@ const SitesOverview = () => {
       meta: { total, page: targetPage, limit },
     };
   }, []);
+
+  // Progressive loading of inventory and client data
+  const progressivelyLoadSiteData = useCallback(async (sitesToEnhance: EnhancedSiteInfo[]) => {
+    // Load inventory data for all sites in parallel
+    const inventoryPromises = sitesToEnhance.map(async (site) => {
+      try {
+        const response = await queueService.request<ApiResponse<InventoryDevice[]>>(`/api/mist/inventory?siteId=${site.id}&limit=1000`);
+        if (response.ok && Array.isArray(response.data)) {
+          const devices = response.data;
+          const summary: InventorySummary = {
+            total_devices: devices.length,
+            ap_count: devices.filter(d => d.type === 'ap').length,
+            switch_count: devices.filter(d => d.type === 'switch').length,
+            connected_devices: devices.filter(d => d.connected).length,
+          };
+          return { siteId: site.id, inventory_summary: summary };
+        }
+      } catch (error) {
+        console.warn(`Failed to load inventory for site ${site.id}:`, error);
+      }
+      return null;
+    });
+
+    // Load client stats for all sites in parallel
+    const clientPromises = sitesToEnhance.map(async (site) => {
+      try {
+        const response = await queueService.request<ApiResponse<{clients: Record<string, unknown>[], summary: ClientSummary}>>(`/api/mist/sites/${site.id}/client-stats?limit=1000`);
+        if (response.ok && response.data) {
+          const { summary } = response.data;
+          return { siteId: site.id, client_summary: summary };
+        }
+      } catch (error) {
+        console.warn(`Failed to load client stats for site ${site.id}:`, error);
+      }
+      return null;
+    });
+
+    // Process results as they come in
+    const inventoryResults = await Promise.allSettled(inventoryPromises);
+    const clientResults = await Promise.allSettled(clientPromises);
+
+    // Update sites with inventory data
+    inventoryResults.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        setSites(prevSites => 
+          prevSites.map(site => 
+            site.id === result.value!.siteId 
+              ? { ...site, inventory_summary: result.value!.inventory_summary }
+              : site
+          )
+        );
+      }
+    });
+
+    // Update sites with client data
+    clientResults.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        setSites(prevSites => 
+          prevSites.map(site => 
+            site.id === result.value!.siteId 
+              ? { ...site, client_summary: result.value!.client_summary }
+              : site
+          )
+        );
+      }
+    });
+  }, [queueService]);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +159,9 @@ const SitesOverview = () => {
         if (!cancelled) {
           setSites(result.sites);
           setMeta(result.meta);
+          
+          // Start progressive loading of inventory and client data
+          progressivelyLoadSiteData(result.sites);
         }
       } catch (e) {
         if (!cancelled) {
@@ -108,7 +180,7 @@ const SitesOverview = () => {
     return () => {
       cancelled = true;
     };
-  }, [fetchPage, page]);
+  }, [fetchPage, page, progressivelyLoadSiteData]);
 
   useEffect(() => {
     if (!meta || loading) {

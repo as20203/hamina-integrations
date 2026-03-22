@@ -1,113 +1,212 @@
-# Hamina Integrations Monorepo
+# Hamina Integrations
 
-Simple monorepo scaffold inspired by the structure in `test-folder/power-apply-clarvo-dev`.
+A comprehensive network management platform built with Next.js and Express.js, featuring Juniper Mist API integration with advanced rate limiting, caching, and real-time updates.
 
-```
-build with no cache
-docker compose --profile db --profile backend --profile frontend build --no-cache docker compose --profile db --profile backend --profile frontend up
-```
+## Architecture
 
-## Structure
+### Frontend (Next.js App Router)
+- **Multi-site dashboard** at `/sites` with card-based layout and URL-driven pagination
+- **Per-site views** at `/site/[siteId]` with device management and monitoring
+- **Device detail pages** at `/site/[siteId]/devices/[deviceId]` with inventory and client information
+- **Progressive loading** with queue service for rate-limited API calls
+- **Real-time updates** via Server-Sent Events (SSE)
 
-```txt
-.
-├── apps
-│   ├── frontend        # Next.js — Mist UI (`/sites` org list, `/site/[id]`, BFF `app/api/mist`)
-│   └── backend         # Express — `/health`, `/api/v1/mist/*`
-├── packages
-│   ├── database        # Prisma (@repo/db)
-│   └── ts-shared/ui    # shadcn `@repo/ui` + `shared/modal`, `shared/pagination`
-├── docker-compose.yml
-└── package.json
-```
+### Backend (Express.js)
+- **3-layer architecture**: Routes → Controllers → Services
+- **Rate limiting** with BullMQ queue system and exponential backoff
+- **Redis caching** with in-memory fallback when Redis is unavailable
+- **Enhanced device detection** using multiple Mist API endpoints
+- **Bull Board dashboard** for queue monitoring with basic authentication
 
-## Apps
+## Features
 
-- `frontend`: Next.js + TypeScript app on port `3000`
-- `backend`: Node.js + TypeScript app on port `4000`
-- `@repo/db`: shared Prisma package structure under `packages/database`
+### Mist API Integration
+- **Organization sites** listing with pagination
+- **Device inventory** with enhanced switch detection
+- **Client statistics** for wireless access points
+- **Site summaries** with device counts and status
+- **Real-time device monitoring** with connection status
 
-## Local development
+### Performance & Reliability
+- **Rate limiting**: 300 requests/minute with 10 concurrent requests max
+- **Caching strategy**: Redis (15min inventory, 2min clients, 30sec summaries) + 10min in-memory fallback
+- **Queue system**: BullMQ with Redis backing for rate-limited requests
+- **Progressive loading**: Site cards load basic info first, then enhance with inventory/client data
+- **Error handling**: Graceful degradation with partial data display
 
-From repo root:
+### User Experience
+- **Card-based site overview** with location, device counts, and client information
+- **Enhanced device tables** with serial numbers, last seen, client counts, connection status
+- **Device detail views** with inventory details and connected client lists (for APs)
+- **URL-driven pagination** that persists on page reload
+- **Real-time feedback** for queued requests via SSE
 
+## Environment Configuration
+
+### Required Variables
 ```bash
-npm install
-npm run db:generate
-npm run dev:backend
-npm run dev:frontend
-```
+# Mist API Configuration
+MIST_API_KEY=your_mist_api_key
+MIST_ORG_ID=your_organization_id
+MIST_SITE_ID=optional_fallback_site_id  # Optional fallback
 
-Then open:
+# Redis Configuration
+REDIS_URL=redis://hamina-redis:6379
+REDIS_CLUSTER=false
+CACHE_FALLBACK_TTL_MINUTES=10
 
-- Frontend: [http://localhost:3000](http://localhost:3000) (`/` redirects to `/sites`; `/mist` redirects to `/sites`)
-- Backend: [http://localhost:4000](http://localhost:4000) (`/health` only; no demo JSON routes)
+# Queue Configuration
+MIST_QUEUE_CONCURRENCY=5
+REDIS_HEALTH_CHECK_INTERVAL_MS=30000
 
-## Docker
+# Bull Board Authentication
+BASIC_AUTH_USER=admin
+BASIC_AUTH_PASS=changeme
 
-Build and run apps + database + prisma migration:
-
-```bash
-docker compose up --build
-```
-
-Key services:
-
-- `db`: Postgres (pgvector image) exposed on `3762`
-- `prisma-migrate`: waits for DB, then runs `npx prisma migrate dev` from `packages/database`
-- `backend`: waits for DB + migration service before starting
-- `frontend`: depends on backend
-
-Run migrations manually (reference workflow):
-
-```bash
-docker compose run --rm prisma-migrate
-```
-
-Recommended scripted workflows:
-
-```bash
-# Run migrations once
-npm run docker:migrate
-
-# Development containers (frontend + backend + db)
-npm run docker:dev
-
-# Production-like build containers (frontend-build + backend-build + db + migrations)
-npm run docker:build
-```
-
-Environment variables:
-
-- **Repo root** `.env` (copy from `.env.example`): shared values used by Docker Compose and all apps — database URLs, Postgres credentials.
-- **`apps/frontend/.env`** (copy from `apps/frontend/.env.example`): frontend app + **Mist** settings (`MIST_*`). The backend reads the same file when you run it locally so Mist calls keep working; do **not** prefix secrets with `NEXT_PUBLIC_`.
-
-```bash
-# .env (repo root)
+# Database
 DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
 DIRECT_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=postgres
 ```
 
+## Development
+
+### Prerequisites
+- Node.js 18+ with npm
+- Docker and Docker Compose
+- Mist API credentials
+
+### Quick Start
 ```bash
-# apps/frontend/.env — see apps/frontend/.env.example
-MIST_API_KEY=
-MIST_API_BASE_URL=https://api.mist.com
-MIST_ORG_ID=
-# Optional dev fallback when calling site-scoped APIs without a path `siteId`
-MIST_SITE_ID=
+# Clone and install dependencies
+git clone <repository>
+cd hamina-integrations
+npm install
+
+# Start development environment
+docker compose --profile hamina up --build -d
+
+# Access services
+# Frontend: http://localhost:3000
+# Backend: http://localhost:4000
+# Bull Board: http://localhost:4000/admin/queues (admin/changeme)
+# Redis: localhost:6381
 ```
 
-Services:
+### Development Commands
+```bash
+# Frontend development
+npm run dev --workspace apps/frontend
 
-- Frontend (dev): [http://localhost:3000](http://localhost:3000)
-- Backend (dev): [http://localhost:4000](http://localhost:4000)
-- Frontend (build): [http://localhost:3100](http://localhost:3100)
-- Backend (build): [http://localhost:4100](http://localhost:4100)
+# Backend development  
+npm run dev --workspace apps/backend
 
-## Notes
+# Type checking
+npm run check-types --workspace apps/frontend
+npm run check-types --workspace apps/backend
 
-- Monorepo uses npm workspaces with `apps/*` and `packages/*`.
-- Shared Prisma package lives in `packages/database` and can be expanded later for actual DB usage.
+# Linting
+npm run lint --workspace apps/frontend
+```
+
+## API Endpoints
+
+### Frontend (BFF Routes)
+- `GET /api/mist/sites` - Organization sites with pagination
+- `GET /api/mist/sites/[siteId]/site-summary` - Site device summary
+- `GET /api/mist/sites/[siteId]/devices` - Site devices with filtering
+- `GET /api/mist/sites/[siteId]/devices/[deviceId]` - Device details
+- `GET /api/mist/inventory` - Organization inventory with filtering
+- `GET /api/mist/sites/[siteId]/client-stats` - Site client statistics
+
+### Backend (Express Routes)
+- `GET /api/v1/mist/sites` - Org sites (cached 15min)
+- `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary (cached 3min)
+- `GET /api/v1/mist/sites/:siteId/devices` - Site devices (cached 5min)
+- `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail (cached 5min)
+- `GET /api/v1/mist/inventory` - Org inventory (cached 15min)
+- `GET /api/v1/mist/sites/:siteId/client-stats` - Client stats (cached 2min)
+- `GET /api/v1/mist/events/:clientId` - SSE endpoint for real-time updates
+- `GET /api/v1/mist/queue/status` - Queue and SSE statistics
+
+### Monitoring
+- `GET /admin/queues` - Bull Board dashboard (basic auth required)
+- `GET /health` - Backend health check
+
+## Deployment
+
+### Production Build
+```bash
+# Build all services
+docker compose --profile hamina --profile backend-build --profile frontend-build up --build -d
+
+# Access production services
+# Frontend: http://localhost:3100
+# Backend: http://localhost:4100
+```
+
+### Docker Services
+- **hamina-redis**: Redis 8.4 Alpine with persistence
+- **hamina-backend**: Express.js API server
+- **hamina-frontend**: Next.js web application
+- **hamina-shared-db**: PostgreSQL database
+
+## Monitoring & Debugging
+
+### Bull Board Dashboard
+Access queue monitoring at `/admin/queues` with basic authentication:
+- View active, waiting, completed, and failed jobs
+- Monitor job processing times and retry attempts
+- Debug rate limiting and queue performance
+
+### Queue Statistics
+Monitor queue health via `/api/v1/mist/queue/status`:
+```json
+{
+  "ok": true,
+  "data": {
+    "queue": {
+      "waiting": 0,
+      "active": 2,
+      "completed": 150,
+      "failed": 1
+    },
+    "sse": {
+      "connectedClients": 3,
+      "clients": ["client-uuid-1", "client-uuid-2"]
+    }
+  }
+}
+```
+
+### Cache Performance
+Redis cache with intelligent fallback:
+- **Primary**: Redis with configurable TTL per data type
+- **Fallback**: In-memory cache (10min TTL) when Redis unavailable
+- **Health checks**: Automatic Redis connectivity monitoring
+- **Pattern invalidation**: Selective cache clearing by key patterns
+
+## Technology Stack
+
+### Frontend
+- **Next.js 16** with App Router and React 19
+- **TypeScript** for type safety
+- **Tailwind CSS** with shadcn/ui components
+- **Lucide React** for icons
+- **Server-Sent Events** for real-time updates
+
+### Backend  
+- **Express.js** with TypeScript
+- **BullMQ** for job queuing with Redis
+- **ioredis** for Redis connectivity
+- **Bull Board** for queue monitoring
+- **Prisma** for database ORM
+
+### Infrastructure
+- **Docker Compose** for service orchestration
+- **Redis 8.4** for caching and job queues
+- **PostgreSQL** for application data
+- **Nginx** (optional) for production reverse proxy
+
+## License
+
+MIT License - see LICENSE file for details.

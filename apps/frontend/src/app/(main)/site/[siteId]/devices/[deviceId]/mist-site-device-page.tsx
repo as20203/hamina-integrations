@@ -77,7 +77,7 @@ const MistSiteDevicePage = () => {
           {error}
         </div>
       ) : null}
-      {device ? <DeviceDetailView device={device} /> : null}
+      {device ? <DeviceDetailView device={device} siteId={siteId} /> : null}
     </div>
   );
 };

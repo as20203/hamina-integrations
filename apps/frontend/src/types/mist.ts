@@ -1,45 +1,18 @@
-export type MistDeviceType = "ap" | "switch" | "unknown";
-
-export type MistDeviceStatus = "connected" | "disconnected" | "unknown";
-
-export type MistDeviceSummary = {
-  id: string;
-  name: string;
-  type: MistDeviceType;
-  status: MistDeviceStatus;
-  model?: string;
-  mac?: string;
-  serial?: string;
-  ip?: string;
-};
-
-export type MistDeviceDetail = MistDeviceSummary & {
-  stats?: Record<string, unknown>;
-  config?: Record<string, unknown>;
-  raw: Record<string, unknown>;
-};
-
-export type MistSiteSummary = {
-  totalDevices: number;
-  byType: {
-    ap: { total: number; connected: number; disconnected: number };
-    switch: { total: number; connected: number; disconnected: number };
-    unknown: { total: number; connected: number; disconnected: number };
-  };
-};
-
-export type MistSiteLatLng = {
-  lat?: number;
-  lng?: number;
-};
-
-export type MistOrgSite = {
-  id: string;
-  name: string;
-  address?: string;
-  country_code?: string;
-  timezone?: string;
-  latlng?: MistSiteLatLng;
-  org_id?: string;
-  notes?: string;
-};
+// Re-export types from centralized types package
+export type {
+  MistDeviceType,
+  MistDeviceStatus,
+  MistDeviceSummary,
+  MistDeviceDetail,
+  MistSiteSummary,
+  MistSiteLatLng,
+  MistOrgSite,
+  InventoryDevice,
+  ClientStats,
+  ClientSummary,
+  InventorySummary,
+  EnhancedSiteInfo,
+  ApiResponse,
+  PaginationMeta,
+  AsyncReturnType
+} from "@repo/types";

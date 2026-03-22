@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import type { MistDeviceDetail, MistDeviceStatus, MistDeviceType } from "@/types/mist";
+import { useState, useEffect } from "react";
+import type { MistDeviceDetail, MistDeviceStatus, MistDeviceType, ClientStats, InventoryDevice, ApiResponse } from "@/types/mist";
+import { useQueueService } from "@/lib/queue/queue-service";
 import {
   asRecord,
   formatBytes,
@@ -21,7 +22,7 @@ import {
   TableRow,
 } from "@repo/ui/components/table";
 import { Modal } from "@repo/ui/shared/modal";
-import { Activity, Bluetooth, Cable, Cpu, Gauge, Globe, Radio, Shield, Zap } from "lucide-react";
+import { Activity, Bluetooth, Cable, Cpu, Gauge, Globe, Radio, Shield, Zap, Users, Package } from "lucide-react";
 import { DeviceDetailSection, KvGrid } from "./device-detail-section";
 import { DeviceFloorPlacement } from "./device-floor-placement";
 import { DeviceStatusBadge } from "./device-status-badge";
@@ -29,6 +30,7 @@ import { DeviceTypeIcon } from "./device-type-icon";
 
 type DeviceDetailViewProps = {
   device: MistDeviceDetail;
+  siteId?: string;
 };
 
 const num = (v: unknown): number | undefined => {
@@ -36,11 +38,61 @@ const num = (v: unknown): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-const DeviceDetailView = ({ device }: DeviceDetailViewProps) => {
+const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
   const [rawOpen, setRawOpen] = useState(false);
+  const queueService = useQueueService();
+  const [inventoryDetails, setInventoryDetails] = useState<InventoryDevice | null>(null);
+  const [clientStats, setClientStats] = useState<ClientStats[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(false);
+  const [loadingClients, setLoadingClients] = useState(false);
+  
   const raw = device.raw;
   const type = device.type as MistDeviceType;
   const status = device.status as MistDeviceStatus;
+
+  // Load inventory details
+  useEffect(() => {
+    if (!siteId) return;
+    
+    const loadInventoryDetails = async () => {
+      setLoadingInventory(true);
+      try {
+        const response = await queueService.request<ApiResponse<InventoryDevice[]>>(`/api/mist/inventory?siteId=${siteId}&limit=1000`);
+        if (response.ok && Array.isArray(response.data)) {
+          const devices = response.data;
+          const inventoryDevice = devices.find(d => d.id === device.id || d.mac === device.mac);
+          setInventoryDetails(inventoryDevice || null);
+        }
+      } catch (error) {
+        console.warn('Failed to load inventory details:', error);
+      } finally {
+        setLoadingInventory(false);
+      }
+    };
+
+    loadInventoryDetails();
+  }, [device.id, device.mac, siteId, queueService]);
+
+  // Load client stats for AP devices
+  useEffect(() => {
+    if (!siteId || device.type !== 'ap') return;
+
+    const loadClientStats = async () => {
+      setLoadingClients(true);
+      try {
+        const response = await queueService.request<ApiResponse<{clients: ClientStats[]}>>(`/api/mist/sites/${siteId}/client-stats?apId=${device.id}&limit=100`);
+        if (response.ok && response.data?.clients) {
+          setClientStats(response.data.clients);
+        }
+      } catch (error) {
+        console.warn('Failed to load client stats:', error);
+      } finally {
+        setLoadingClients(false);
+      }
+    };
+
+    loadClientStats();
+  }, [device.id, device.type, siteId, queueService]);
 
   const ipStat = asRecord(raw.ip_stat);
   const radioStat = asRecord(raw.radio_stat);
@@ -302,6 +354,80 @@ const DeviceDetailView = ({ device }: DeviceDetailViewProps) => {
           ]}
         />
       </DeviceDetailSection>
+
+      {/* Inventory Details Section */}
+      {inventoryDetails && (
+        <DeviceDetailSection title="Inventory Details" icon={Package}>
+          <KvGrid
+            rows={[
+              { label: "Serial", value: inventoryDetails.serial || "—", mono: true },
+              { 
+                label: "Connected", 
+                value: (
+                  <Badge variant={inventoryDetails.connected ? "default" : "secondary"}>
+                    {inventoryDetails.connected ? "Online" : "Offline"}
+                  </Badge>
+                )
+              },
+              { 
+                label: "Last Seen", 
+                value: inventoryDetails.modified_time 
+                  ? formatUnixSeconds(inventoryDetails.modified_time) 
+                  : "—" 
+              },
+              { 
+                label: "Profile", 
+                value: inventoryDetails.deviceprofile_id || "Default" 
+              },
+              { 
+                label: "Created", 
+                value: inventoryDetails.created_time 
+                  ? formatUnixSeconds(inventoryDetails.created_time) 
+                  : "—" 
+              },
+              { label: "Site ID", value: inventoryDetails.site_id || "—", mono: true },
+            ]}
+          />
+        </DeviceDetailSection>
+      )}
+
+      {/* Connected Clients Section (for APs) */}
+      {device.type === 'ap' && (
+        <DeviceDetailSection title="Connected Clients" icon={Users}>
+          {loadingClients ? (
+            <div className="text-sm text-muted-foreground">Loading clients...</div>
+          ) : clientStats.length > 0 ? (
+            <div className="space-y-2">
+              {clientStats.slice(0, 10).map(client => (
+                <div key={client.mac} className="flex justify-between text-sm border-b pb-2">
+                  <div>
+                    <div className="font-medium">{client.hostname || client.mac}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {client.ip && <span className="mr-2">{client.ip}</span>}
+                      {client.ssid && <span className="mr-2">SSID: {client.ssid}</span>}
+                      {client.is_guest && <Badge variant="outline" className="text-xs">Guest</Badge>}
+                    </div>
+                  </div>
+                  <div className="text-right text-xs text-muted-foreground">
+                    {client.rssi && <div>{client.rssi} dBm</div>}
+                    {client.band && <div>{client.band}</div>}
+                    {client.last_seen && (
+                      <div>{formatUnixSeconds(client.last_seen)}</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {clientStats.length > 10 && (
+                <div className="text-xs text-muted-foreground text-center pt-2">
+                  ... and {clientStats.length - 10} more clients
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No active clients</p>
+          )}
+        </DeviceDetailSection>
+      )}
 
       <Modal
         isOpen={rawOpen}

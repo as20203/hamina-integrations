@@ -1,5 +1,6 @@
 export { registerRoutes } from "./routes/index.js";
 export { mistRouter } from "./routes/mist.routes.js";
+export { bullBoardRouter } from "./routes/bull-board.routes.js";
 export {
   getOrgSitesController,
   getSiteSummaryController,

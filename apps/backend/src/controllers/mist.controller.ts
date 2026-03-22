@@ -4,9 +4,20 @@ import {
   getDeviceList,
   getOrgSites,
   getSiteSummary,
+  mistService,
   type DeviceStatusFilter,
   type DeviceTypeFilter,
 } from "../services/mist.service.js";
+import type {
+  ControllerFunction,
+  SiteParams,
+  DeviceParams,
+  PaginationQuery,
+  DeviceQuery,
+  InventoryQuery,
+  ClientStatsQuery,
+  MistDeviceType
+} from "@repo/types";
 
 const parsePositiveInt = (value: unknown, fallback: number, max?: number): number => {
   const n = typeof value === "string" ? Number(value) : Number.NaN;
@@ -85,4 +96,61 @@ const getDeviceDetailController = async (req: Request, res: Response): Promise<v
   }
 };
 
-export { getOrgSitesController, getSiteSummaryController, getDeviceListController, getDeviceDetailController };
+// Inventory controller
+const getOrgInventoryController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const siteId = req.query.siteId as string | undefined;
+    const type = req.query.type as "ap" | "switch" | undefined;
+    const connected = req.query.connected === 'true' ? true : req.query.connected === 'false' ? false : undefined;
+    const limit = parsePositiveInt(req.query.limit, 50, 500);
+    const page = parsePositiveInt(req.query.page, 1);
+
+    const { devices, meta } = await mistService.getOrgInventory({
+      ...(siteId && { siteId }),
+      ...(type && { type }),
+      ...(connected !== undefined && { connected }),
+      limit,
+      page,
+    });
+
+    res.status(200).json({ ok: true, data: devices, meta });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ ok: false, error: message });
+  }
+};
+
+// Client stats controller
+const getSiteClientStatsController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const siteId = String(req.params.siteId ?? "").trim();
+    if (!siteId) {
+      res.status(400).json({ ok: false, error: "Missing site id" });
+      return;
+    }
+
+    const duration = req.query.duration as string | undefined;
+    const limit = parsePositiveInt(req.query.limit, 100, 1000);
+    const apId = req.query.apId as string | undefined;
+
+    const { clients, summary } = await mistService.getSiteClientStats(siteId, {
+      ...(duration && { duration }),
+      limit,
+      ...(apId && { apId }),
+    });
+
+    res.status(200).json({ ok: true, data: { clients, summary } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ ok: false, error: message });
+  }
+};
+
+export { 
+  getOrgSitesController, 
+  getSiteSummaryController, 
+  getDeviceListController, 
+  getDeviceDetailController,
+  getOrgInventoryController,
+  getSiteClientStatsController,
+};

@@ -1,17 +1,18 @@
 "use client";
 
-import type { MistOrgSite } from "@/types/mist";
+import type { EnhancedSiteInfo } from "@/types/mist";
 import { Card, CardContent, CardHeader, CardTitle } from "@repo/ui/components/card";
+import { Badge } from "@repo/ui/components/badge";
 import { cn } from "@repo/ui/lib/utils";
-import { Clock, Crosshair, Globe2, MapPin } from "lucide-react";
+import { Clock, Crosshair, Globe2, MapPin, Server, Users, Wifi, Router } from "lucide-react";
 
 type SiteCardProps = {
-  site: MistOrgSite;
+  site: EnhancedSiteInfo;
   className?: string;
   onSelect: (siteId: string) => void;
 };
 
-const formatLatLng = (site: MistOrgSite): string | null => {
+const formatLatLng = (site: EnhancedSiteInfo): string | null => {
   const { lat, lng } = site.latlng ?? {};
   if (typeof lat === "number" && typeof lng === "number") {
     return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
@@ -67,6 +68,35 @@ const SiteCard = ({ site, className, onSelect }: SiteCardProps) => {
             <span className="font-mono text-xs">{coords}</span>
           </div>
         ) : null}
+        
+        {/* Device inventory summary */}
+        {site.inventory_summary && (
+          <div className="flex items-center gap-2 text-sm">
+            <Server className="h-4 w-4 text-primary/80" />
+            <span>
+              {site.inventory_summary.ap_count} APs, {site.inventory_summary.switch_count} switches
+            </span>
+            {site.inventory_summary.connected_devices < site.inventory_summary.total_devices && (
+              <Badge variant="outline" className="text-xs">
+                {site.inventory_summary.connected_devices}/{site.inventory_summary.total_devices} online
+              </Badge>
+            )}
+          </div>
+        )}
+
+        {/* Client summary */}
+        {site.client_summary && (
+          <div className="flex items-center gap-2 text-sm">
+            <Users className="h-4 w-4 text-primary/80" />
+            <span>{site.client_summary.active_clients} active clients</span>
+            {site.client_summary.wireless_clients > 0 && (
+              <div className="flex items-center gap-1">
+                <Wifi className="h-3 w-3" />
+                <span className="text-xs">{site.client_summary.wireless_clients} wireless</span>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

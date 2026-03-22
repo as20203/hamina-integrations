@@ -629,20 +629,20 @@ const getSiteClientStats = async (
     cacheKey,
     CACHE_CONFIGS.CLIENT_STATS,
     async () => {
-      const params = new URLSearchParams();
-      if (options?.duration) {
-        params.append("duration", options.duration);
-      }
-
       // For a specific AP, Mist's ap_id query param is unreliable; fetch a wider site list and filter by ap_id/ap/device_id.
       const responseLimit = options?.apId
         ? Math.min(1000, Math.max(300, (options.limit ?? 100) * 10))
         : Math.min(1000, options?.limit ?? 100);
 
-      params.append("limit", String(responseLimit));
-
-      const endpoint = `https://api.mist.com/api/v1/sites/${siteId}/stats/clients?${params.toString()}`;
-      const data = (await mistFetch(endpoint)) as Record<string, unknown>[];
+      const id = resolveSiteId(siteId);
+      const query: Record<string, string | undefined> = {
+        limit: String(responseLimit),
+      };
+      if (options?.duration) {
+        query.duration = options.duration;
+      }
+      const raw = await mistFetch<unknown>(`/api/v1/sites/${id}/stats/clients`, query);
+      const data = asArray(raw);
 
       let clients = mapMistClientStatsRows(data);
 

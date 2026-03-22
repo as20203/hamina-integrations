@@ -110,6 +110,18 @@ npm run check-types --workspace apps/backend
 npm run lint --workspace apps/frontend
 ```
 
+### Docker build: `npm` ECONNRESET / network aborted
+
+Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeouts**, more **per-request retries**, and **two full `npm install` retries** with backoff. If installs still fail:
+
+1. **Retry** the same `docker compose build` (often transient registry/Wi‑Fi drops).
+2. **Stable network** — try wired, VPN off, or another connection.
+3. **Linux: build with host networking** (can help with Docker DNS/NAT):
+   ```bash
+   DOCKER_BUILDKIT=1 docker build --network=host -f apps/backend/Dockerfile .
+   ```
+4. **Corporate proxy** — set `HTTP_PROXY` / `HTTPS_PROXY` for the daemon or build, and npm `proxy` / `https-proxy` if required.
+
 ## API Endpoints
 
 ### Frontend (BFF Routes)

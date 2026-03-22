@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM node:22-alpine AS base
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD true
@@ -21,10 +22,14 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 
 WORKDIR /app
 
-RUN npm config set fetch-retries 10 \
-  && npm config set fetch-retry-mintimeout 20000 \
-  && npm config set fetch-retry-maxtimeout 120000 \
-  && npm install turbo --global
+RUN --mount=type=cache,target=/root/.npm \
+    npm config set fetch-retries 20 \
+  && npm config set fetch-retry-mintimeout 30000 \
+  && npm config set fetch-retry-maxtimeout 180000 \
+  && npm config set fetch-timeout 600000 \
+  && (npm install turbo --global \
+    || (echo "turbo install failed; retry 1/2 in 45s..." && sleep 45 && npm install turbo --global) \
+    || (echo "turbo install failed; retry 2/2 in 90s..." && sleep 90 && npm install turbo --global))
 
 COPY . .
 
@@ -46,12 +51,14 @@ RUN apk add --no-cache libc6-compat \
 
 WORKDIR /app
 
-# Reduce flaky ECONNRESET / aborted installs when the registry drops connections during image builds
-RUN npm config set fetch-retries 10 \
-  && npm config set fetch-retry-mintimeout 20000 \
-  && npm config set fetch-retry-maxtimeout 120000
-
 COPY --from=builder /app/out/json/ .
-RUN npm install --frozen-lockfile
+RUN --mount=type=cache,target=/root/.npm \
+    npm config set fetch-retries 20 \
+  && npm config set fetch-retry-mintimeout 30000 \
+  && npm config set fetch-retry-maxtimeout 180000 \
+  && npm config set fetch-timeout 600000 \
+  && (npm install --frozen-lockfile \
+    || (echo "npm install --frozen-lockfile failed; retry 1/2 in 45s..." && sleep 45 && npm install --frozen-lockfile) \
+    || (echo "npm install --frozen-lockfile failed; retry 2/2 in 90s..." && sleep 90 && npm install --frozen-lockfile))
 
 EXPOSE 3000

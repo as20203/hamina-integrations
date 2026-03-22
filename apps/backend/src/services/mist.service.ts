@@ -50,14 +50,35 @@ const asArray = (value: unknown): Record<string, unknown>[] => {
   return [];
 };
 
-const toDeviceType = (value: unknown): DeviceSummary["type"] => {
-  const str = String(value || "").toLowerCase();
-  if (str.includes("ap") || str.includes("access")) {
-    return "ap";
-  }
-  if (str.includes("switch")) {
+/**
+ * Classify device type from Mist inventory fields.
+ * Switches often appear only on `GET /sites/{id}/devices` with `type: "switch"`; AP stats may omit them entirely.
+ */
+const toDeviceType = (record: Record<string, unknown>): DeviceSummary["type"] => {
+  const type = String(record.type ?? "").toLowerCase();
+  const deviceType = String(record.device_type ?? "").toLowerCase();
+  const family = String(record.family ?? "").toLowerCase();
+  const model = String(record.model ?? "").toLowerCase();
+  const haystack = `${type} ${deviceType} ${family} ${model}`;
+
+  // Explicit Mist enums / strings first
+  if (type === "switch" || deviceType === "switch") {
     return "switch";
   }
+  if (type === "ap" || type === "ble" || deviceType === "ap") {
+    return "ap";
+  }
+
+  if (haystack.includes("switch") || haystack.includes("junos") || haystack.includes("ex4") || haystack.includes("qfx")) {
+    return "switch";
+  }
+  if (haystack.includes("access point") || haystack.includes("wifi") || haystack.includes("wlan")) {
+    return "ap";
+  }
+  if (haystack.includes("ap") || haystack.includes("access")) {
+    return "ap";
+  }
+
   return "unknown";
 };
 
@@ -94,7 +115,7 @@ const normalizeDevice = (stats: Record<string, unknown>, config?: Record<string,
   const detail: MistDeviceDetail = {
     id,
     name: String(merged.name || merged.hostname || merged.device_name || id || "Unknown Device"),
-    type: toDeviceType(merged.type || merged.device_type || merged.model),
+    type: toDeviceType(merged),
     status: toDeviceStatus(merged),
     raw: merged,
   };
@@ -154,17 +175,26 @@ const buildMergedDevices = async (siteId: string): Promise<MistDeviceDetail[]> =
     }
   });
 
-  const normalized = statsDevices.map((stats) => {
+  const normalizedFromStats = statsDevices.map((stats) => {
     const key = getDeviceKey(stats);
     const config = key ? byKey.get(key) : undefined;
     return normalizeDevice(stats, config);
   });
 
-  if (normalized.length === 0) {
+  if (normalizedFromStats.length === 0) {
     return siteDevices.map((device) => normalizeDevice(device));
   }
 
-  return normalized;
+  // `/stats/devices` is AP-centric; switches (and other gear) may exist only on `/devices`.
+  const keysFromStats = new Set(
+    statsDevices.map((s) => getDeviceKey(s)).filter((k) => k.length > 0)
+  );
+  const onlyOnInventory = siteDevices.filter((device) => {
+    const key = getDeviceKey(device);
+    return key.length > 0 && !keysFromStats.has(key);
+  });
+
+  return [...normalizedFromStats, ...onlyOnInventory.map((d) => normalizeDevice(d))];
 };
 
 const filterDevices = (

@@ -131,13 +131,6 @@ const SitesOverview = () => {
 
   const safePage = Math.min(page, totalPages);
 
-  const existingParams = useMemo(() => {
-    const o: Record<string, string> = {};
-    searchParams.forEach((v, k) => {
-      o[k] = v;
-    });
-    return o;
-  }, [searchParams]);
 
   const goToSite = useCallback(
     (siteId: string) => {

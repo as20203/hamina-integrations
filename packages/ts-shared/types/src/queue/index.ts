@@ -58,6 +58,8 @@ export interface QueueStats {
 
 export interface RateLimitConfig {
   maxRequestsPerMinute: number;
+  /** Rolling 1h cap (Mist org limits, e.g. 5k/hour). */
+  maxRequestsPerHour: number;
   maxConcurrentRequests: number;
   retryAfterMs: number;
 }

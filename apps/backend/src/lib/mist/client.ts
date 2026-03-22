@@ -1,4 +1,5 @@
 import { getMistConfig } from "./config.js";
+import { mistRateLimiter } from "./rate-limiter.js";
 
 const sleep = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,25 +29,27 @@ const mistFetch = async <T>(
   const { apiKey, baseUrl } = getMistConfig();
   const url = `${baseUrl}${withQuery(path, query)}`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Token ${apiKey}`,
-      Accept: "application/json",
-    },
+  return mistRateLimiter.runWhenAllowed(async () => {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    if ((response.status === 429 || response.status >= 500) && attempt < 4) {
+      await sleep(250 * attempt);
+      return mistFetch<T>(path, query, attempt + 1);
+    }
+
+    const body = await response.text().catch(() => "");
+    throw new Error(`Mist API request failed (${response.status}): ${body || response.statusText}`);
   });
-
-  if (response.ok) {
-    return (await response.json()) as T;
-  }
-
-  if ((response.status === 429 || response.status >= 500) && attempt < 4) {
-    await sleep(250 * attempt);
-    return mistFetch<T>(path, query, attempt + 1);
-  }
-
-  const body = await response.text().catch(() => "");
-  throw new Error(`Mist API request failed (${response.status}): ${body || response.statusText}`);
 };
 
 type MistFetchMetaResult<T> = { data: T; headers: Headers };
@@ -59,26 +62,28 @@ const mistFetchWithMeta = async <T>(
   const { apiKey, baseUrl } = getMistConfig();
   const url = `${baseUrl}${withQuery(path, query)}`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Authorization: `Token ${apiKey}`,
-      Accept: "application/json",
-    },
+  return mistRateLimiter.runWhenAllowed(async () => {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Token ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as T;
+      return { data, headers: response.headers };
+    }
+
+    if ((response.status === 429 || response.status >= 500) && attempt < 4) {
+      await sleep(250 * attempt);
+      return mistFetchWithMeta<T>(path, query, attempt + 1);
+    }
+
+    const body = await response.text().catch(() => "");
+    throw new Error(`Mist API request failed (${response.status}): ${body || response.statusText}`);
   });
-
-  if (response.ok) {
-    const data = (await response.json()) as T;
-    return { data, headers: response.headers };
-  }
-
-  if ((response.status === 429 || response.status >= 500) && attempt < 4) {
-    await sleep(250 * attempt);
-    return mistFetchWithMeta<T>(path, query, attempt + 1);
-  }
-
-  const body = await response.text().catch(() => "");
-  throw new Error(`Mist API request failed (${response.status}): ${body || response.statusText}`);
 };
 
 const readPaginationMeta = (headers: Headers, page: number, limit: number): { total: number; page: number; limit: number } => {

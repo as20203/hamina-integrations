@@ -127,17 +127,17 @@ flowchart LR
 
 For a typical Mist-backed call, traffic flows **browser → Next BFF → Express** ([`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/) → [`apps/backend/src/routes/mist.routes.ts`](apps/backend/src/routes/mist.routes.ts)). The backend then combines **Redis-backed caching**, optional **queuing** when limits are hit, and **Server-Sent Events** so the UI can wait for asynchronous work without polling.
 
-1. **Redis application cache** — Several service paths use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) (for example [org inventory and site client stats](apps/backend/src/services/mist.service.ts)): read Redis first (with an in-memory fallback if Redis is down); on a miss, run the loader, then store the JSON with a TTL. A hot cache short-circuits before any Mist or queue work.
+1. **Redis application cache** — Service paths use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) for org **sites** (per page/limit), **merged site devices** (shared by site summary, device list, and device detail), **org inventory**, and **site client stats**: read Redis first (with in-memory fallback if Redis is down); on a miss, run the loader, then store JSON with a TTL.
 
-2. **Mist HTTP call** — On cache miss, handlers call Mist ([`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts)) with retries on 429/5xx.
+2. **Mist HTTP call** — On cache miss, [`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts) call Mist with retries on 429/5xx. Each outbound attempt first acquires a slot via [`mistRateLimiter.runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) (rolling **per-minute** and **per-hour** caps plus max concurrency) so traffic stays under org limits (e.g. ~5k/hour); the limiter **waits** with short sleeps instead of failing.
 
-3. **Rate limiter and BullMQ** — [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts) tracks request rate and concurrency (defaults align with Mist-style limits). If the limiter decides the call cannot run immediately, or Mist returns **429**, the work is enqueued on the **`mist-api`** BullMQ queue ([`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts)). Jobs are stored in **Redis** (same broker connection as cache).
+3. **Rate limiter and BullMQ** — [`executeRequest`](apps/backend/src/lib/mist/rate-limiter.ts) (browser-driven paths) can still **enqueue** to BullMQ when local limits are hit or Mist returns **429**. Server-side **`mistFetch`** paths use **`runWhenAllowed`** only (no SSE). Jobs live in **Redis** via [`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts).
 
 4. **Worker and SSE** — The BullMQ **worker** runs the outbound HTTP request. It notifies the right browser session via [`sseManager`](apps/backend/src/lib/sse/sse-manager.ts): **`queue-started`**, then **`queue-complete`** or **`queue-error`**, keyed by **`clientId`** and **`requestId`**.
 
 5. **Browser** — The client opens an **EventSource** to the same-origin BFF route [`/api/mist/events/{clientId}`](apps/frontend/src/app/api/mist/events/) (which proxies to Express [`GET /api/v1/mist/events/:clientId`](apps/backend/src/routes/mist.routes.ts)). [`useQueueService` / `QueueService`](apps/frontend/src/lib/queue/queue-service.ts) sends **`X-Client-ID`** on fetches; if the JSON body includes **`isQueued: true`** and a **`requestId`**, it keeps the UI promise pending until the matching SSE message arrives.
 
-Not every handler goes through **`MistRateLimiter.executeRequest`**; many flows use **`mistFetch`** inside a **`getOrSet`** loader (or uncached reads). The sequence diagram below shows the **end-to-end** path—including queue and SSE—so you can see how Redis cache, Mist, BullMQ, and the browser stay aligned when work is deferred.
+Most Mist reads use **`mistFetch`** (throttled by **`runWhenAllowed`**) inside **`getOrSet`** loaders. The sequence diagram below still shows the **queue + SSE** path for deferred browser-initiated work.
 
 ```mermaid
 sequenceDiagram
@@ -219,8 +219,8 @@ sequenceDiagram
 - **Real-time device monitoring** with connection status
 
 ### Performance & Reliability
-- **Rate limiting**: 300 requests/minute with 10 concurrent requests max
-- **Caching strategy**: Redis (15min inventory, 2min clients, 30sec summaries) + 10min in-memory fallback
+- **Rate limiting**: Every **`mistFetch`** waits for capacity under rolling **per-minute** (default 300, `MIST_MAX_REQUESTS_PER_MINUTE`) and **per-hour** (default 5000, `MIST_MAX_REQUESTS_PER_HOUR`) caps plus **10** concurrent requests; aligns with typical Mist org quotas.
+- **Caching strategy**: Redis — **5min** org sites (per page) and **5min** merged devices per site (summary/list/detail share one key); **15min** inventory; **2min** client stats; **10min** in-memory fallback when Redis is down
 - **Queue system**: BullMQ with Redis backing for rate-limited requests
 - **Progressive loading**: Site cards load basic info first, then enhance with inventory/client data
 - **Error handling**: Graceful degradation with partial data display
@@ -267,6 +267,8 @@ Templates live in:
 | `CACHE_FALLBACK_TTL_MINUTES` | No | Backend `cache-config.ts` | Default `10`. |
 | `REDIS_HEALTH_CHECK_INTERVAL_MS` | No | Backend | Default `30000`. |
 | `MIST_QUEUE_CONCURRENCY` | No | Backend BullMQ worker | Default `5`. |
+| `MIST_MAX_REQUESTS_PER_MINUTE` | No | Backend `mistFetch` throttle | Default `300` (rolling 1 min). |
+| `MIST_MAX_REQUESTS_PER_HOUR` | No | Backend `mistFetch` throttle | Default `5000` (rolling 1 h; typical Mist org cap). |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | No | Bull Board route | Defaults `admin` / `changeme`. |
 | `PORT` | No | Backend `server.ts` | Compose sets `4000` for backend services. |
 | `NODE_ENV` | No | Compose + Node | `development` / `production` per service. |
@@ -358,10 +360,10 @@ Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeou
 - `GET /api/mist/sites/[siteId]/client-stats` - Site client statistics
 
 ### Backend (Express Routes)
-- `GET /api/v1/mist/sites` - Org sites (cached 15min)
-- `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary (cached 3min)
-- `GET /api/v1/mist/sites/:siteId/devices` - Site devices (cached 5min)
-- `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail (cached 5min)
+- `GET /api/v1/mist/sites` - Org sites (cached **5min** per org/page/limit)
+- `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary (uses **5min** merged-devices cache per site)
+- `GET /api/v1/mist/sites/:siteId/devices` - Site devices (same **5min** merged-devices cache)
+- `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail (same **5min** merged-devices cache)
 - `GET /api/v1/mist/inventory` - Org inventory (cached 15min)
 - `GET /api/v1/mist/sites/:siteId/client-stats` - Client stats (cached 2min)
 - `GET /api/v1/mist/events/:clientId` - SSE endpoint for real-time updates

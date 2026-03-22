@@ -8,16 +8,6 @@ import {
   type DeviceStatusFilter,
   type DeviceTypeFilter,
 } from "../services/mist.service.js";
-import type {
-  ControllerFunction,
-  SiteParams,
-  DeviceParams,
-  PaginationQuery,
-  DeviceQuery,
-  InventoryQuery,
-  ClientStatsQuery,
-  MistDeviceType
-} from "@repo/types";
 
 const parsePositiveInt = (value: unknown, fallback: number, max?: number): number => {
   const n = typeof value === "string" ? Number(value) : Number.NaN;
@@ -146,10 +136,10 @@ const getSiteClientStatsController = async (req: Request, res: Response): Promis
   }
 };
 
-export { 
-  getOrgSitesController, 
-  getSiteSummaryController, 
-  getDeviceListController, 
+export {
+  getOrgSitesController,
+  getSiteSummaryController,
+  getDeviceListController,
   getDeviceDetailController,
   getOrgInventoryController,
   getSiteClientStatsController,

@@ -1,7 +1,6 @@
 import { mistFetch, mistFetchWithMeta, readPaginationMeta } from "../lib/mist/client.js";
 import { getMistConfig } from "../lib/mist/config.js";
 import { cache, CACHE_CONFIGS } from "../lib/cache/redis-cache.js";
-import { mistRateLimiter } from "../lib/mist/rate-limiter.js";
 import type {
   MistDeviceDetail,
   MistDeviceType,
@@ -154,38 +153,41 @@ const fetchSiteDevices = async (siteId: string): Promise<Record<string, unknown>
 };
 
 const buildMergedDevices = async (siteId: string): Promise<MistDeviceDetail[]> => {
-  const [statsDevices, siteDevices] = await Promise.all([
-    fetchSiteStatsDevices(siteId),
-    fetchSiteDevices(siteId),
-  ]);
-  const byKey = new Map<string, Record<string, unknown>>();
-  siteDevices.forEach((device) => {
-    const key = getDeviceKey(device);
-    if (key) {
-      byKey.set(key, device);
+  const id = resolveSiteId(siteId);
+  return cache.getOrSet(id, CACHE_CONFIGS.SITE_INVENTORY, async () => {
+    const [statsDevices, siteDevices] = await Promise.all([
+      fetchSiteStatsDevices(siteId),
+      fetchSiteDevices(siteId),
+    ]);
+    const byKey = new Map<string, Record<string, unknown>>();
+    siteDevices.forEach((device) => {
+      const key = getDeviceKey(device);
+      if (key) {
+        byKey.set(key, device);
+      }
+    });
+
+    const normalizedFromStats = statsDevices.map((stats) => {
+      const key = getDeviceKey(stats);
+      const config = key ? byKey.get(key) : undefined;
+      return normalizeDevice(stats, config);
+    });
+
+    if (normalizedFromStats.length === 0) {
+      return siteDevices.map((device) => normalizeDevice(device));
     }
+
+    // `/stats/devices` is AP-centric; switches (and other gear) may exist only on `/devices`.
+    const keysFromStats = new Set(
+      statsDevices.map((s) => getDeviceKey(s)).filter((k) => k.length > 0)
+    );
+    const onlyOnInventory = siteDevices.filter((device) => {
+      const key = getDeviceKey(device);
+      return key.length > 0 && !keysFromStats.has(key);
+    });
+
+    return [...normalizedFromStats, ...onlyOnInventory.map((d) => normalizeDevice(d))];
   });
-
-  const normalizedFromStats = statsDevices.map((stats) => {
-    const key = getDeviceKey(stats);
-    const config = key ? byKey.get(key) : undefined;
-    return normalizeDevice(stats, config);
-  });
-
-  if (normalizedFromStats.length === 0) {
-    return siteDevices.map((device) => normalizeDevice(device));
-  }
-
-  // `/stats/devices` is AP-centric; switches (and other gear) may exist only on `/devices`.
-  const keysFromStats = new Set(
-    statsDevices.map((s) => getDeviceKey(s)).filter((k) => k.length > 0)
-  );
-  const onlyOnInventory = siteDevices.filter((device) => {
-    const key = getDeviceKey(device);
-    return key.length > 0 && !keysFromStats.has(key);
-  });
-
-  return [...normalizedFromStats, ...onlyOnInventory.map((d) => normalizeDevice(d))];
 };
 
 const filterDevices = (
@@ -210,22 +212,26 @@ const getOrgSites = async (
   const { orgId } = getMistConfig();
   const safeLimit = Math.max(1, Math.min(500, limit));
   const safePage = Math.max(1, page);
-  const { data, headers } = await mistFetchWithMeta<unknown[]>(
-    `/api/v1/orgs/${orgId}/sites`,
-    {
-      limit: String(safeLimit),
-      page: String(safePage),
-    }
-  );
+  const cacheKey = `${orgId}:${safePage}:${safeLimit}`;
 
-  const list = Array.isArray(data) ? data.map(asRecord) : [];
-  const meta = readPaginationMeta(headers, safePage, safeLimit);
-  const total = meta.total > 0 ? meta.total : list.length;
+  return cache.getOrSet(cacheKey, CACHE_CONFIGS.ORG_SITES, async () => {
+    const { data, headers } = await mistFetchWithMeta<unknown[]>(
+      `/api/v1/orgs/${orgId}/sites`,
+      {
+        limit: String(safeLimit),
+        page: String(safePage),
+      }
+    );
 
-  return {
-    sites: list,
-    meta: { total, page: safePage, limit: safeLimit },
-  };
+    const list = Array.isArray(data) ? data.map(asRecord) : [];
+    const meta = readPaginationMeta(headers, safePage, safeLimit);
+    const total = meta.total > 0 ? meta.total : list.length;
+
+    return {
+      sites: list,
+      meta: { total, page: safePage, limit: safeLimit },
+    };
+  });
 };
 
 const getSiteSummary = async (siteId: string): Promise<SiteSummary> => {

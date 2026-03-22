@@ -6,6 +6,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY apps/backend ./apps/backend
 COPY packages/database ./packages/database
+# Workspace package (declared in root workspaces as packages/ts-shared/*)
+COPY packages/ts-shared/types ./packages/ts-shared/types
 
 # Cache tarball downloads between builds; retries + backoff for flaky registry (ECONNRESET)
 RUN --mount=type=cache,target=/root/.npm \

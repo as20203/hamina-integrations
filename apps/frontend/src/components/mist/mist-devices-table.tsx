@@ -9,11 +9,13 @@ import { DeviceStatusBadge } from "./device-status-badge";
 import { useEffect, useState } from "react";
 import { useQueueService } from "@/lib/queue/queue-service";
 import { formatUnixSeconds } from "@/lib/mist/format";
-import { Users } from "lucide-react";
+import { RefreshCw, Users } from "lucide-react";
 
 type MistDevicesTableProps = {
   siteId: string;
   devices: MistDeviceSummary[];
+  /** True while parent is fetching the device list (initial load or refresh). */
+  devicesLoading?: boolean;
 };
 
 type EnhancedDeviceData = {
@@ -27,7 +29,7 @@ const typeLabel = (t: MistDeviceType) => {
   return "Unknown";
 };
 
-const MistDevicesTable = ({ siteId, devices }: MistDevicesTableProps) => {
+const MistDevicesTable = ({ siteId, devices, devicesLoading = false }: MistDevicesTableProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
   const backQs = searchParams.toString();
@@ -83,9 +85,22 @@ const MistDevicesTable = ({ siteId, devices }: MistDevicesTableProps) => {
     loadEnhancedData();
   }, [devices, siteId, queueService]);
 
+  const showEmptyNotLoading = devices.length === 0 && !devicesLoading;
+  const showLoadingPlaceholder = devices.length === 0 && devicesLoading;
+  const showRefreshOverlay = devices.length > 0 && devicesLoading;
+
   return (
-    <div className="rounded-xl border bg-card shadow-sm">
-      <Table>
+    <div className="relative rounded-xl border bg-card shadow-sm">
+      {showRefreshOverlay ? (
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70 backdrop-blur-[1px]"
+          aria-busy="true"
+          aria-label="Loading devices"
+        >
+          <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" aria-hidden />
+        </div>
+      ) : null}
+      <Table aria-busy={devicesLoading || undefined}>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead>Name</TableHead>
@@ -101,7 +116,16 @@ const MistDevicesTable = ({ siteId, devices }: MistDevicesTableProps) => {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {devices.length === 0 ? (
+          {showLoadingPlaceholder ? (
+            <TableRow>
+              <TableCell colSpan={10} className="h-32 text-center text-muted-foreground">
+                <div className="flex flex-col items-center justify-center gap-3 py-4">
+                  <RefreshCw className="h-8 w-8 animate-spin" aria-hidden />
+                  <span className="text-sm">Loading devices…</span>
+                </div>
+              </TableCell>
+            </TableRow>
+          ) : showEmptyNotLoading ? (
             <TableRow>
               <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
                 No devices match the current filters.

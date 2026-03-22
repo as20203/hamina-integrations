@@ -1,11 +1,11 @@
+# Profile `hamina-build`: production images — db + redis + prisma-migrate + backend (apps/backend/Dockerfile) + frontend (apps/frontend/Dockerfile)
+#   docker compose --profile hamina-build up --build
 services:
   redis:
-    profiles: ["redis", "hamina", "backend", "backend-build"]
+    profiles: ["redis", "hamina", "backend", "backend-build", "hamina-build"]
     image: redis:8.4-alpine
     container_name: hamina-redis
     hostname: hamina-redis
-    ports:
-      - "6381:6379"
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -27,6 +27,7 @@ services:
         "frontend",
         "backend-build",
         "frontend-build",
+        "hamina-build",
       ]
     container_name: hamina-shared-db
     build:
@@ -51,7 +52,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   prisma-migrate:
-    profiles: ["prisma-migrate", "hamina"]
+    profiles: ["prisma-migrate", "hamina", "hamina-build"]
     container_name: hamina-prisma-migrate
     build:
       context: .
@@ -80,8 +81,12 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
       DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
       PORT: 4000
+      # Same pattern as BACKEND_INTERNAL_URL on frontend: service DNS name on the Compose network
+      REDIS_URL: redis://redis:6379
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./apps/backend:/app/apps/backend
@@ -121,7 +126,7 @@ services:
       - /app/node_modules
 
   backend-build:
-    profiles: ["backend-build"]
+    profiles: ["backend-build", "hamina-build"]
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
@@ -133,6 +138,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
       DIRECT_DATABASE_URL: ${DIRECT_DATABASE_URL:-postgresql://postgres:postgres@db:5432/postgres}
       PORT: 4000
+      REDIS_URL: redis://redis:6379
     depends_on:
       db:
         condition: service_healthy
@@ -142,7 +148,7 @@ services:
         condition: service_completed_successfully
 
   frontend-build:
-    profiles: ["frontend-build"]
+    profiles: ["frontend-build", "hamina-build"]
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile

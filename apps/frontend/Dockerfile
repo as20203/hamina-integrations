@@ -5,6 +5,9 @@ WORKDIR /app
 
 COPY package.json package-lock.json* ./
 COPY apps/frontend ./apps/frontend
+COPY packages/database ./packages/database
+COPY packages/ts-shared/types ./packages/ts-shared/types
+COPY packages/ts-shared/ui ./packages/ts-shared/ui
 
 RUN --mount=type=cache,target=/root/.npm \
     npm config set fetch-retries 20 \

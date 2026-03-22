@@ -2,6 +2,78 @@
 
 A comprehensive network management platform built with Next.js and Express.js, featuring Juniper Mist API integration with advanced rate limiting, caching, and real-time updates.
 
+## Docker is required
+
+Postgres, Redis, the Express API, and Next.js are orchestrated with **Docker Compose**. You need **Docker** and **Docker Compose** installed to run the app the way this repo expects (databases, queues, and internal networking). You can still run `npm install` on your host for editors and scripts, but **starting the full stack uses Compose**.
+
+## How to start the app
+
+### One-time setup
+
+```bash
+git clone <repository>
+cd hamina-integrations
+npm install
+```
+
+1. **Mist / BFF env (required)**  
+   Copy `apps/frontend/.env.example` → **`apps/frontend/.env`** and set at least **`MIST_API_KEY`** and **`MIST_ORG_ID`** (see [Environment variables](#environment-variables) below).
+
+2. **Compose substitution (optional)**  
+   Copy **`.env.example`** → **`.env`** in the **repo root** if you want to override defaults for Compose (Postgres credentials, `DATABASE_URL`, Redis URL, etc.). Compose injects these when expanding `${VAR}` in `docker-compose.yml`.
+
+### Development stack (hot reload, published UI)
+
+Runs **db**, **redis**, **prisma-migrate** (on profile `hamina`), **backend** (dev image), **frontend** (dev image).
+
+```bash
+docker compose --profile hamina up --build -d
+```
+
+| Service    | URL / access |
+|-----------|----------------|
+| **Next.js (UI + BFF)** | [http://localhost:3000](http://localhost:3000) |
+| **Postgres** | `localhost:3762` (user/pass/db from `.env` or defaults in compose) |
+| **Redis**    | **Not** published; backend uses **`REDIS_URL=redis://redis:6379`** on the Compose network (set in `docker-compose.yml` for `backend` / `backend-build`). |
+| **Express**  | **Not** published on the host; Next BFF calls `http://backend:4000` inside the network (`BACKEND_INTERNAL_URL` on the frontend service). |
+
+Stop: `docker compose --profile hamina down`
+
+### Production-style build (compiled images)
+
+Uses **`apps/backend/Dockerfile`** and **`apps/frontend/Dockerfile`**, plus db, redis, and migrate.
+
+```bash
+npm run docker:build
+# equivalent:
+docker compose --profile hamina-build up --build -d
+```
+
+| Service    | URL / access |
+|-----------|----------------|
+| **Next.js** | [http://localhost:3100](http://localhost:3100) |
+| **Express** | Internal only (`backend-build:4000`); `frontend-build` has `BACKEND_INTERNAL_URL=http://backend-build:4000`. |
+
+### Useful npm scripts (from repo root)
+
+| Script | Purpose |
+|--------|---------|
+| `npm run docker:build` | Production-style stack (`hamina-build` profile), detached |
+| `npm run docker:dev` | `docker compose --profile db --profile backend --profile frontend up --build` (includes **Redis** because the `redis` service also uses the `backend` profile). Does **not** run **`prisma-migrate`**; use **`hamina`** or `npm run docker:migrate` if the DB schema is not up to date. |
+| `npm run docker:migrate` | One-shot Prisma migrate container (`prisma-migrate` profile) |
+| `npm run dev --workspace apps/frontend` | Next dev **on host** (you must supply DB/Redis/backend yourself) |
+| `npm run dev --workspace apps/backend` | Express dev **on host** (same) |
+
+### Advanced: DB + Redis only on Docker
+
+If you run Next/Express with `npm run dev` on the host, start dependencies only:
+
+```bash
+docker compose --profile db --profile redis up -d
+```
+
+Then point **`DATABASE_URL`** / **`DIRECT_DATABASE_URL`** at `localhost:3762`, **`REDIS_URL`** at `redis://127.0.0.1:6379` (if Redis runs on the host) **or** temporarily map Redis in compose (e.g. `ports: ["6381:6379"]`) and use that URL, and **`BACKEND_INTERNAL_URL`** / **`NEXT_PUBLIC_*`** at `http://127.0.0.1:4000` in `apps/frontend/.env`, and run migrations against that DB (`npm run db:migrate --workspace @repo/db` with env loaded).
+
 ## Architecture
 
 ### Frontend (Next.js App Router)
@@ -41,73 +113,65 @@ A comprehensive network management platform built with Next.js and Express.js, f
 - **URL-driven pagination** that persists on page reload
 - **Real-time feedback** for queued requests via SSE
 
-## Environment Configuration
+## Environment variables
 
-### Required Variables
-```bash
-# Mist API Configuration
-MIST_API_KEY=your_mist_api_key
-MIST_ORG_ID=your_organization_id
-MIST_SITE_ID=optional_fallback_site_id  # Optional fallback
+Templates live in:
 
-# Redis Configuration
-REDIS_URL=redis://hamina-redis:6379
-REDIS_CLUSTER=false
-CACHE_FALLBACK_TTL_MINUTES=10
+| File | Purpose |
+|------|---------|
+| **`apps/frontend/.env.example`** | BFF URL, Mist keys, optional `NEXT_PUBLIC_BACKEND_URL`. **Copy to `apps/frontend/.env`.** |
+| **`.env.example` (repo root)** | Postgres, Redis, queue/cache/Bull Board defaults for Compose substitution. **Copy to `.env` at repo root** if you override compose defaults. |
 
-# Queue Configuration
-MIST_QUEUE_CONCURRENCY=5
-REDIS_HEALTH_CHECK_INTERVAL_MS=30000
+### Where values are loaded
 
-# Bull Board Authentication
-BASIC_AUTH_USER=admin
-BASIC_AUTH_PASS=changeme
+| Mechanism | What it does |
+|-----------|----------------|
+| **`env_file: ./apps/frontend/.env`** | In `docker-compose.yml`, both **`frontend`** and **`backend`** (and **`backend-build`**) load this file into the container process. **Put Mist secrets and shared app config here.** |
+| **`environment:` in compose** | Overrides per service, e.g. `NODE_ENV`, `PORT`, `DATABASE_URL` defaults, **`BACKEND_INTERNAL_URL=http://backend:4000`** (dev) or **`http://backend-build:4000`** (prod build), **`REDIS_URL=redis://redis:6379`** on **`backend`** / **`backend-build`** (internal Redis; not published to the host). |
+| **Root `.env`** | Docker Compose reads **`.env`** next to `docker-compose.yml` for **`${VAR}`** interpolation (e.g. `${DATABASE_URL:-...}`, `${POSTGRES_USER:-postgres}` on the **`db`** service). Does **not** automatically inject into app containers unless the same name is passed via `environment` / `env_file`. |
+| **`prisma-migrate` service** | Gets `DATABASE_URL`, `DIRECT_DATABASE_URL`, `APP_SOURCE_NAME` from compose `environment` (can be fed from root `.env`). |
 
-# Database
-DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
-DIRECT_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
-```
+### Variable reference (from code + compose)
+
+| Variable | Required | Consumed by | Notes |
+|----------|----------|-------------|--------|
+| `MIST_API_KEY` | **Yes** (runtime) | Backend `getMistConfig()` | Loaded from `apps/frontend/.env` in Docker. |
+| `MIST_ORG_ID` | **Yes** | Backend | Same. |
+| `MIST_API_BASE_URL` | No | Backend | Default `https://api.mist.com`. |
+| `MIST_SITE_ID` | No | Backend | Optional default site in dev. |
+| `DATABASE_URL` | Yes for DB/Prisma | `@repo/db` / Prisma, compose defaults | In Docker, compose sets `postgresql://...@db:5432/...`. |
+| `DIRECT_DATABASE_URL` | Yes for migrations | Prisma / migrate service | Often same as `DATABASE_URL`. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | For Postgres container | **`db`** service `environment` in compose | Can be set via root `.env`. |
+| `REDIS_URL` | No | Backend `redis-client.ts` | Compose sets **`redis://redis:6379`** for **`backend`** / **`backend-build`** (internal). If unset locally, default is **`redis://127.0.0.1:6379`**. |
+| `REDIS_CLUSTER` | No | Backend | Set `true` for cluster mode. |
+| `REDIS_PASSWORD` | No | Documented in root `.env.example` | Wire into Redis URL if you secure Redis. |
+| `CACHE_FALLBACK_TTL_MINUTES` | No | Backend `cache-config.ts` | Default `10`. |
+| `REDIS_HEALTH_CHECK_INTERVAL_MS` | No | Backend | Default `30000`. |
+| `MIST_QUEUE_CONCURRENCY` | No | Backend BullMQ worker | Default `5`. |
+| `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | No | Bull Board route | Defaults `admin` / `changeme`. |
+| `PORT` | No | Backend `server.ts` | Compose sets `4000` for backend services. |
+| `NODE_ENV` | No | Compose + Node | `development` / `production` per service. |
+| `BACKEND_INTERNAL_URL` | **Yes for BFF** | Next.js **server** API routes (`getBackendInternalBaseUrl()`) | Compose sets Docker service URL; local dev use `http://127.0.0.1:4000`. |
+| `NEXT_PUBLIC_BACKEND_URL` | No | Fallback in `getBackendInternalBaseUrl()` only | Do **not** set to `http://backend:4000` (browser cannot resolve). See `apps/frontend/.env.example`. |
+| `APP_SOURCE_NAME` | No | `prisma-migrate` service | Default `unknown`. |
 
 ## Development
 
 ### Prerequisites
-- Node.js 18+ with npm
-- Docker and Docker Compose
-- Mist API credentials
+- **Docker** and **Docker Compose** (required to run the stack)
+- **Node.js 18+** and **npm** (for local install, types, lint)
+- **Mist API** credentials in `apps/frontend/.env`
 
-### Quick Start
+### Commands (host)
+
 ```bash
-# Clone and install dependencies
-git clone <repository>
-cd hamina-integrations
-npm install
-
-# Start development environment
-docker compose --profile hamina up --build -d
-
-# Access services
-# Frontend: http://localhost:3000 (Mist data via Next.js BFF routes under /api/mist/*)
-# Backend (Express): not published to the host; reachable inside the stack as http://backend:4000
-#   (configured via BACKEND_INTERNAL_URL on the frontend container)
-# Bull Board: only from the Docker network, e.g. exec into frontend/backend and curl http://backend:4000/admin/queues
-#   or temporarily add ports: ["4000:4000"] on the backend service for local debugging
-# Redis: localhost:6381
-```
-
-### Development Commands
-```bash
-# Frontend development
-npm run dev --workspace apps/frontend
-
-# Backend development  
-npm run dev --workspace apps/backend
-
 # Type checking
 npm run check-types --workspace apps/frontend
 npm run check-types --workspace apps/backend
 
 # Linting
 npm run lint --workspace apps/frontend
+npm run lint --workspace apps/backend
 ```
 
 ### Docker build: `npm` ECONNRESET / network aborted
@@ -148,18 +212,23 @@ Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeou
 
 ## Deployment
 
-### Production Build
-```bash
-# Build all services
-docker compose --profile hamina --profile backend-build --profile frontend-build up --build -d
+### Production Build (`hamina-build` profile)
 
-# Access production services
-# Frontend: http://localhost:3100
-# Backend: http://localhost:4100
+Uses **`apps/backend/Dockerfile`** and **`apps/frontend/Dockerfile`**, plus Postgres, Redis, and a one-shot Prisma migrate.
+
+```bash
+npm run docker:build
+# same as:
+docker compose --profile hamina-build up --build -d
+
+# Or only backend/frontend images (you must start db, redis, migrate separately):
+docker compose --profile backend-build --profile frontend-build up --build -d
 ```
 
+**Access:** Next.js **http://localhost:3100** (Mist API via BFF). Express is **not** published on the host; it runs as `backend-build` on the Compose network (`BACKEND_INTERNAL_URL` on `frontend-build`).
+
 ### Docker Services
-- **hamina-redis**: Redis 8.4 Alpine with persistence
+- **hamina-redis**: Redis 8.4 Alpine with persistence (internal port 6379 only unless you add a `ports` mapping for debugging)
 - **hamina-backend**: Express.js API server
 - **hamina-frontend**: Next.js web application
 - **hamina-shared-db**: PostgreSQL database

@@ -12,7 +12,8 @@ import {
   SelectValue,
 } from "@repo/ui/components/select";
 import { Pagination } from "@repo/ui/shared/pagination";
-import { ArrowLeft } from "lucide-react";
+import { cn } from "@repo/ui/lib/utils";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { MistDevicesTable } from "./mist-devices-table";
 import { MistMetricCards } from "./mist-metric-cards";
@@ -162,11 +163,12 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
         </Select>
 
         <Button type="button" variant="outline" size="sm" onClick={() => void fetchData()} disabled={loading}>
+          <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} aria-hidden />
           {loading ? "Refreshing…" : "Refresh"}
         </Button>
       </div>
 
-      <MistDevicesTable siteId={siteId} devices={pageSlice} />
+      <MistDevicesTable siteId={siteId} devices={pageSlice} devicesLoading={loading} />
 
       {devices.length > 0 ? (
         <Pagination

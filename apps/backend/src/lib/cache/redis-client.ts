@@ -1,6 +1,7 @@
 import { Redis, Cluster } from 'ioredis';
 
-const defaultRedisUrl = 'redis://hamina-redis:6379';
+/** Local/backend-on-host default; Docker Compose sets REDIS_URL=redis://redis:6379 */
+const defaultRedisUrl = "redis://127.0.0.1:6379";
 const redisUrl = process.env.REDIS_URL ?? defaultRedisUrl;
 
 const attachConnectionLogs = (connection: Redis | Cluster): Redis | Cluster => {

@@ -48,20 +48,21 @@ export const cacheMiddleware = (options: CacheMiddlewareOptions) => {
 
 // Predefined cache middleware for common patterns
 export const inventoryCacheMiddleware = cacheMiddleware({
-  config: { ttl: 900, keyPrefix: 'mist:inventory:org', fallbackTtl: 600 },
-  keyGenerator: (req) => {
+  config: { ttl: 900, keyPrefix: "mist:inventory:org", fallbackTtl: 600 },
+  keyGenerator: (req: Request) => {
     const params = queryToUrlSearchParams(req.query);
     return `${req.path}:${params.toString()}`;
   },
-  condition: (req) => req.method === 'GET'
+  condition: (req: Request) => req.method === "GET",
 });
 
-export const siteCacheMiddleware = (config: CacheConfig) => cacheMiddleware({
-  config,
-  keyGenerator: (req) => {
-    const siteId = req.params.siteId;
-    const params = queryToUrlSearchParams(req.query);
-    return `${siteId}:${params.toString()}`;
-  },
-  condition: (req) => req.method === 'GET'
-});
+export const siteCacheMiddleware = (config: CacheConfig) =>
+  cacheMiddleware({
+    config,
+    keyGenerator: (req: Request) => {
+      const siteId = req.params.siteId;
+      const params = queryToUrlSearchParams(req.query);
+      return `${siteId}:${params.toString()}`;
+    },
+    condition: (req: Request) => req.method === "GET",
+  });

@@ -273,7 +273,7 @@ flowchart TD
 ### Mist API Integration
 - **Organization sites** listing with pagination
 - **Device inventory** with enhanced switch detection
-- **Client statistics** for wireless access points — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** (BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site when filtering by AP)
+- **Client statistics** for wireless access points — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** (BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site when filtering by AP). Full flow, endpoints, and field mapping: [AP device detail: Connected Clients](#ap-device-detail-connected-clients).
 - **Site summaries** with device counts and status
 - **Real-time device monitoring** with connection status
 - **How site table Status is determined** (merge, inventory enrichment, `resolveRowStatus`) — see [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown)
@@ -624,6 +624,66 @@ const resolveRowStatus = (
 |-------------|----------------------------------------|
 | **AP** | Often present in `/stats/devices` → merge sets status from stats + `toDeviceStatus`. |
 | **Switch** | Often **only** on site `/devices` → `toDeviceStatus` may return `unknown` until **backend enrichment** (inventory) or **frontend inventory** match fills it. |
+
+---
+
+## AP device detail: Connected Clients
+
+Example URL shape: `/site/{siteId}/devices/{deviceId}` (e.g. `http://localhost:3000/site/f339c0ca-e5c1-4e23-aed6-faf193307202/devices/00000000-0000-0000-1000-d420b080efbf`). Page component: `apps/frontend/src/app/(main)/site/[siteId]/devices/[deviceId]/mist-site-device-page.tsx`; detail UI: [`device-detail-view.tsx`](apps/frontend/src/components/mist/device-detail-view.tsx).
+
+### Requests the browser makes (device page)
+
+| Order | Browser → BFF | BFF → Express | Backend → Mist | Purpose |
+|-------|----------------|---------------|----------------|---------|
+| 1 | `GET /api/mist/sites/{siteId}/devices/{deviceId}` | `GET /api/v1/mist/sites/:siteId/devices/:deviceId` | `buildMergedDevices` cache + optional `GET /api/v1/sites/{siteId}/devices/{id}` | Load **`MistDeviceDetail`** (`device.raw`, type, name, stats fields such as `num_clients`). |
+| 2 (AP only) | `GET /api/mist/sites/{siteId}/client-stats?apId={device.id}&limit=100` | `GET /api/v1/mist/sites/:siteId/client-stats` | **`GET /api/v1/sites/{siteId}/stats/clients`** with a raised `limit` (see below) | Build the **Connected Clients** list for this AP. |
+| 3 (optional) | `GET /api/mist/inventory?siteId={siteId}&limit=1000` | `GET /api/v1/mist/inventory` | `GET /api/v1/orgs/{orgId}/inventory?site_id=…` | **Inventory Details** block (serial, online/offline, profile, etc.). |
+
+Device detail uses a plain **`fetch`** for the device JSON; client-stats and inventory go through the **queue service** (`X-Client-ID` header) like other BFF routes.
+
+### Backend: `getSiteClientStats` when `apId` is set
+
+Implemented in [`getSiteClientStats`](apps/backend/src/services/mist.service.ts) (used by [`getSiteClientStatsController`](apps/backend/src/controllers/mist.controller.ts)).
+
+| Setting | Value |
+|---------|--------|
+| Mist endpoint | `GET /api/v1/sites/{siteId}/stats/clients` with query `limit` (and optional `duration`). |
+| `limit` when filtering by AP | `min(1000, max(300, (options.limit ?? 100) * 10))`. For UI `limit=100` → **1000** rows requested so clients tied to the AP are less likely to be cut off by pagination. |
+| Why not Mist `ap_id` query param | Comment in code: Mist’s `ap_id` query is **unreliable**; we fetch a wide site list and filter server-side. |
+| Filter | Keep rows where `ap_id` on our normalized row (see below) equals **`options.apId`** (case-insensitive, trimmed). |
+| Cap after filter | `slice(0, options.limit ?? 100)` → at most **100** clients returned to the UI for the Connected Clients list. |
+| Cache | Redis key prefix **`mist:clients:site`** (per `siteId` + JSON-stringified options); TTL **120 s** — see [Mist data endpoints](#mist-data-endpoints-redis-keys-ttl-and-read-flow). |
+
+### Mapping Mist client rows → `ClientStats` → UI
+
+[`mapMistClientStatsRows`](apps/backend/src/services/mist.service.ts) maps each Mist object to [`ClientStats`](packages/ts-shared/types/src/mist/index.ts). **AP linkage** for filtering uses [`apIdFromMistClientRow`](apps/backend/src/services/mist.service.ts): first non-empty among Mist fields **`ap_id`**, **`ap`**, **`device_id`**.
+
+| UI / API field | Mist source fields (typical) |
+|----------------|------------------------------|
+| `mac` | `mac` |
+| `hostname` | `hostname` |
+| `ip` | `ip` |
+| `ssid` | `ssid` |
+| `rssi` | `rssi` (shown as “−57 dBm” style in UI) |
+| `band` | `band` (e.g. `5` for 5 GHz) |
+| `last_seen` | `last_seen` (Unix seconds → formatted date in UI) |
+| `is_guest` | `is_guest` |
+| `ap_id` (for filter only) | `ap_id` **or** `ap` **or** `device_id` |
+
+In [`DeviceDetailView`](apps/frontend/src/components/mist/device-detail-view.tsx) **Connected Clients** renders up to **10** rows (`slice(0, 10)`) with hostname (fallback MAC), IP, SSID, guest badge, RSSI, band, and last seen — matching rows like *mursu3 / 10.2.2.78 / SSID: … / −57 dBm / 5 / date*.
+
+### “Clients” summary card vs Connected Clients list
+
+| UI block | Data source | Meaning |
+|--------|----------------|---------|
+| **Clients** (large number in the metric strip) | `device.raw.num_clients` from the **device** payload (merged AP **stats**). | Mist’s count on that AP stats object. |
+| **Connected Clients** | Filtered **`/stats/clients`** rows for this **`device.id`**. | Individual client rows; capped at 100 from API, first 10 shown. |
+
+They can **differ**: Mist may report `num_clients` while client rows use another id field, pagination may omit rows, or stats and client list may be briefly inconsistent. The UI includes an **info** modal on the device page when `num_clients > 0` but the filtered list is empty — see [`DeviceDetailView`](apps/frontend/src/components/mist/device-detail-view.tsx).
+
+### Switches and non-AP devices
+
+**Connected Clients** (and the client-stats `useEffect`) run only when `device.type === 'ap'`. Switches do not load wireless client rows through this path.
 
 ---
 

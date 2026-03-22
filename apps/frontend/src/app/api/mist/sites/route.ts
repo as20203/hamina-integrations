@@ -1,8 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const getBackendBaseUrl = (): string => {
-  return process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://backend:4000";
-};
+import { getBackendInternalBaseUrl } from "@/lib/backend-internal-url";
 
 export const GET = async (request: NextRequest) => {
   try {
@@ -16,7 +13,7 @@ export const GET = async (request: NextRequest) => {
       query.set("page", page);
     }
     const suffix = query.toString() ? `?${query.toString()}` : "";
-    const response = await fetch(`${getBackendBaseUrl()}/api/v1/mist/sites${suffix}`, {
+    const response = await fetch(`${getBackendInternalBaseUrl()}/api/v1/mist/sites${suffix}`, {
       method: "GET",
       cache: "no-store",
     });

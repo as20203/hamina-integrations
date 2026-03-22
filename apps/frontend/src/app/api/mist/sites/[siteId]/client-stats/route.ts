@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || "http://localhost:4000";
+import { getBackendInternalBaseUrl } from "@/lib/backend-internal-url";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { siteId: string } }
+  context: { params: Promise<{ siteId: string }> }
 ) {
   try {
-    const { siteId } = params;
+    const { siteId } = await context.params;
     const { searchParams } = new URL(request.url);
-    const backendUrl = `${BACKEND_URL}/api/v1/mist/sites/${siteId}/client-stats?${searchParams.toString()}`;
+    const backendUrl = `${getBackendInternalBaseUrl()}/api/v1/mist/sites/${encodeURIComponent(siteId)}/client-stats?${searchParams.toString()}`;
 
     const response = await fetch(backendUrl, {
       method: "GET",

@@ -1,14 +1,11 @@
 import { NextResponse } from "next/server";
-
-const getBackendBaseUrl = (): string => {
-  return process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://backend:4000";
-};
+import { getBackendInternalBaseUrl } from "@/lib/backend-internal-url";
 
 export const GET = async (_req: Request, context: { params: Promise<{ siteId: string }> }) => {
   try {
     const { siteId } = await context.params;
     const response = await fetch(
-      `${getBackendBaseUrl()}/api/v1/mist/sites/${encodeURIComponent(siteId)}/site-summary`,
+      `${getBackendInternalBaseUrl()}/api/v1/mist/sites/${encodeURIComponent(siteId)}/site-summary`,
       {
         method: "GET",
         cache: "no-store",

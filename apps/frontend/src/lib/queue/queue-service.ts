@@ -1,32 +1,36 @@
-import { v4 as uuidv4 } from 'uuid';
-import type { QueuedRequest, SSEMessage, QueueServiceStats } from '@repo/types';
+import { v4 as uuidv4 } from "uuid";
+import type { QueuedRequest, SSEMessage, QueueServiceStats } from "@repo/types";
 
 class QueueService {
   private eventSource: EventSource | null = null;
-  private pendingRequests = new Map<string, Omit<QueuedRequest, 'requestId'>>();
+  private pendingRequests = new Map<string, Omit<QueuedRequest, "requestId">>();
   private clientId = uuidv4();
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectDelay = 1000; // Start with 1 second
+  private reconnectDelay = 1000;
+  private lastSseUrl = "";
 
-  constructor() {
-    this.connect();
+  /**
+   * Same-origin SSE so the browser never calls Express directly (Docker hostname `backend` is not resolvable in the browser).
+   */
+  private getSseUrl(): string {
+    return `/api/mist/events/${encodeURIComponent(this.clientId)}`;
   }
 
   private connect(): void {
     if (this.eventSource) {
       this.eventSource.close();
+      this.eventSource = null;
     }
 
-    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000';
-    const sseUrl = `${backendUrl}/api/v1/mist/events/${this.clientId}`;
-    
-    console.log(`[queue-service] Connecting to SSE: ${sseUrl}`);
-    
+    const sseUrl = this.getSseUrl();
+    this.lastSseUrl = sseUrl;
+    console.log(`[queue-service] Connecting to SSE (same-origin): ${sseUrl}`);
+
     this.eventSource = new EventSource(sseUrl);
 
     this.eventSource.onopen = () => {
-      console.log('[queue-service] SSE connection opened');
+      console.log("[queue-service] SSE connection opened");
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
     };
@@ -36,37 +40,56 @@ class QueueService {
         const message: SSEMessage = JSON.parse(event.data);
         this.handleSSEMessage(message);
       } catch (error) {
-        console.warn('[queue-service] Failed to parse SSE message:', error);
+        console.warn("[queue-service] Failed to parse SSE message:", error);
       }
     };
 
-    this.eventSource.onerror = (error) => {
-      console.error('[queue-service] SSE connection error:', error);
-      this.eventSource?.close();
-      
+    this.eventSource.onerror = () => {
+      const es = this.eventSource;
+      const state = es?.readyState;
+      const label =
+        state === EventSource.CONNECTING
+          ? "CONNECTING"
+          : state === EventSource.OPEN
+            ? "OPEN"
+            : "CLOSED";
+      console.warn(
+        `[queue-service] SSE issue (readyState=${label}, url=${this.lastSseUrl}). ` +
+          "If this repeats, confirm the backend is running and BACKEND_INTERNAL_URL is set for the Next.js server (e.g. http://127.0.0.1:4000 locally, http://backend:4000 in Docker)."
+      );
+      es?.close();
+
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
         const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-        console.log(`[queue-service] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        
+        console.log(`[queue-service] Reconnecting SSE in ${delay}ms (attempt ${this.reconnectAttempts})`);
         setTimeout(() => {
           this.connect();
         }, delay);
       } else {
-        console.error('[queue-service] Max reconnection attempts reached');
+        console.warn("[queue-service] SSE: max reconnection attempts reached (queue callbacks may not work until reload)");
       }
     };
   }
 
-  private handleSSEMessage(message: SSEMessage): void {
-    console.log('[queue-service] Received SSE message:', message);
+  /** Open SSE when we actually need queue + API calls (avoids noisy errors on idle pages). */
+  private ensureSseConnected(): void {
+    if (
+      this.eventSource &&
+      (this.eventSource.readyState === EventSource.OPEN ||
+        this.eventSource.readyState === EventSource.CONNECTING)
+    ) {
+      return;
+    }
+    this.connect();
+  }
 
-    if (message.type === 'ping') {
-      return; // Ignore ping messages
+  private handleSSEMessage(message: SSEMessage): void {
+    if (message.type === "ping") {
+      return;
     }
 
-    if (message.type === 'connected') {
-      console.log('[queue-service] SSE connection confirmed');
+    if (message.type === "connected") {
       return;
     }
 
@@ -80,73 +103,87 @@ class QueueService {
     }
 
     switch (message.type) {
-      case 'queue-complete':
+      case "queue-complete":
         request.resolve(message.data);
         this.pendingRequests.delete(message.requestId);
         break;
-      
-      case 'queue-error':
-        request.reject(new Error(message.error || 'Queue processing failed'));
+
+      case "queue-error":
+        request.reject(new Error(message.error || "Queue processing failed"));
         this.pendingRequests.delete(message.requestId);
         break;
-      
-      case 'queue-started':
-        console.log(`[queue-service] Request ${message.requestId} started processing`);
+
+      case "queue-started":
         break;
-      
+
       default:
-        console.warn('[queue-service] Unknown SSE message type:', message.type);
+        console.warn("[queue-service] Unknown SSE message type:", message.type);
     }
   }
 
   async request<T>(url: string, options: RequestInit = {}): Promise<T> {
-    const requestId = uuidv4();
-    
+    this.ensureSseConnected();
+
+    let response: Response;
     try {
-      // Make the HTTP request
-      const response = await fetch(url, {
+      response = await fetch(url, {
         ...options,
         headers: {
-          'Content-Type': 'application/json',
-          'X-Client-ID': this.clientId,
+          "Content-Type": "application/json",
+          "X-Client-ID": this.clientId,
           ...options.headers,
         },
       });
-
-      const data = await response.json();
-      
-      // Check if the response indicates a queued request
-      if (data.isQueued && data.requestId) {
-        console.log(`[queue-service] Request queued: ${data.requestId}`);
-        
-        // Return a promise that resolves when the SSE message arrives
-        return new Promise<T>((resolve, reject) => {
-          this.pendingRequests.set(data.requestId, {
-            resolve: resolve as (data: unknown) => void,
-            reject,
-            timestamp: Date.now(),
-          });
-
-          // Set a timeout to avoid hanging forever
-          setTimeout(() => {
-            if (this.pendingRequests.has(data.requestId)) {
-              this.pendingRequests.delete(data.requestId);
-              reject(new Error('Queue request timeout'));
-            }
-          }, 300000); // 5 minute timeout
-        });
-      }
-
-      // Regular response
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP ${response.status}`);
-      }
-
-      return data;
     } catch (error) {
-      console.error('[queue-service] Request failed:', error);
+      const hint =
+        "Could not reach this app’s API route. If you use Docker, set BACKEND_INTERNAL_URL on the frontend service so Next.js can proxy to Express.";
+      if (error instanceof TypeError) {
+        throw new Error(`${error.message} — ${hint}`);
+      }
       throw error;
     }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    let data: unknown;
+    if (contentType.includes("application/json")) {
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error(`Invalid JSON from ${url} (HTTP ${response.status})`);
+      }
+    } else {
+      const text = await response.text();
+      throw new Error(text || `Unexpected response HTTP ${response.status} from ${url}`);
+    }
+
+    const payload = data as Record<string, unknown>;
+
+    if (payload.isQueued === true && typeof payload.requestId === "string") {
+      return new Promise<T>((resolve, reject) => {
+        this.pendingRequests.set(payload.requestId as string, {
+          resolve: resolve as (data: unknown) => void,
+          reject,
+          timestamp: Date.now(),
+        });
+
+        setTimeout(() => {
+          if (this.pendingRequests.has(payload.requestId as string)) {
+            this.pendingRequests.delete(payload.requestId as string);
+            reject(new Error("Queue request timeout"));
+          }
+        }, 300_000);
+      });
+    }
+
+    if (!response.ok) {
+      const errMsg =
+        typeof payload.error === "string"
+          ? payload.error
+          : `HTTP ${response.status}`;
+      throw new Error(`${errMsg} (${url})`);
+    }
+
+    return data as T;
   }
 
   getStats(): QueueServiceStats {
@@ -161,29 +198,27 @@ class QueueService {
       this.eventSource.close();
       this.eventSource = null;
     }
-    
-    // Reject all pending requests
+
     for (const request of this.pendingRequests.values()) {
-      request.reject(new Error('Queue service disconnected'));
+      request.reject(new Error("Queue service disconnected"));
     }
     this.pendingRequests.clear();
   }
 }
 
-// Global instance
 let queueServiceInstance: QueueService | null = null;
 
 export const getQueueService = (): QueueService => {
-  if (typeof window === 'undefined') {
-    // Server-side: return a mock that just does regular fetch
+  if (typeof window === "undefined") {
     return {
       request: async <T>(url: string, options: RequestInit = {}): Promise<T> => {
         const response = await fetch(url, options);
-        const data = await response.json();
+        const data = (await response.json()) as unknown;
         if (!response.ok) {
-          throw new Error(data.error || `HTTP ${response.status}`);
+          const body = data as { error?: string };
+          throw new Error(body.error || `HTTP ${response.status}`);
         }
-        return data;
+        return data as T;
       },
       getStats: () => ({ connectedToSSE: false, pendingRequests: 0 }),
       disconnect: () => {},
@@ -193,11 +228,10 @@ export const getQueueService = (): QueueService => {
   if (!queueServiceInstance) {
     queueServiceInstance = new QueueService();
   }
-  
+
   return queueServiceInstance;
 };
 
-// React hook for using the queue service
 export const useQueueService = () => {
   return getQueueService();
 };

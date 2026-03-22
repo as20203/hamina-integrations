@@ -12,10 +12,11 @@ docker compose --profile db --profile backend --profile frontend build --no-cach
 ```txt
 .
 ├── apps
-│   ├── frontend        # Next.js + TypeScript app (hello world)
-│   └── backend         # Node.js + Express + TypeScript app (hello world)
+│   ├── frontend        # Next.js — Mist site UI (`/mist`, `@/components/mist`, BFF under `app/api/mist`)
+│   └── backend         # Express — `/health`, `/api/v1/mist/*`
 ├── packages
-│   └── database        # Shared Prisma package (@repo/db)
+│   ├── database        # Prisma (@repo/db)
+│   └── ts-shared/ui    # shadcn `@repo/ui` + `shared/modal`, `shared/pagination`
 ├── docker-compose.yml
 └── package.json
 ```
@@ -39,8 +40,8 @@ npm run dev:frontend
 
 Then open:
 
-- Frontend: [http://localhost:3000](http://localhost:3000)
-- Backend: [http://localhost:4000](http://localhost:4000)
+- Frontend: [http://localhost:3000](http://localhost:3000) (redirects to `/mist`)
+- Backend: [http://localhost:4000](http://localhost:4000) (`/health` only; no demo JSON routes)
 
 ## Docker
 
@@ -76,14 +77,26 @@ npm run docker:dev
 npm run docker:build
 ```
 
-Environment variables (add in `.env` when ready):
+Environment variables:
+
+- **Repo root** `.env` (copy from `.env.example`): shared values used by Docker Compose and all apps — database URLs, Postgres credentials.
+- **`apps/frontend/.env`** (copy from `apps/frontend/.env.example`): frontend app + **Mist** settings (`MIST_*`). The backend reads the same file when you run it locally so Mist calls keep working; do **not** prefix secrets with `NEXT_PUBLIC_`.
 
 ```bash
+# .env (repo root)
 DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
 DIRECT_DATABASE_URL=postgresql://postgres:postgres@db:5432/postgres
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 POSTGRES_DB=postgres
+```
+
+```bash
+# apps/frontend/.env — see apps/frontend/.env.example
+MIST_API_KEY=
+MIST_API_BASE_URL=https://api.mist.com
+MIST_ORG_ID=
+MIST_SITE_ID=
 ```
 
 Services:

@@ -1,6 +1,15 @@
+import { config as loadEnv } from "dotenv";
 import express, { type Express } from "express";
-import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerRoutes } from "./src/index.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "../..");
+
+// Root `.env`: shared (DB, Postgres, etc.). `apps/frontend/.env`: Mist + frontend-local vars.
+loadEnv({ path: path.join(repoRoot, ".env") });
+loadEnv({ path: path.join(repoRoot, "apps/frontend/.env") });
 
 const resolvePort = (): number => {
   const rawPort = process.env.PORT;

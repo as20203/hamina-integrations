@@ -4,7 +4,8 @@ import type { EnhancedSiteInfo } from "@/types/mist";
 import { Card, CardContent, CardHeader, CardTitle } from "@repo/ui/components/card";
 import { Badge } from "@repo/ui/components/badge";
 import { cn } from "@repo/ui/lib/utils";
-import { Clock, Crosshair, Globe2, MapPin, Server, Users, Wifi, Router } from "lucide-react";
+import { shouldSkipNavigationForTextSelection } from "@/lib/skip-navigation-if-text-selection";
+import { Clock, Crosshair, Globe2, MapPin, Server, Users, Wifi } from "lucide-react";
 
 type SiteCardProps = {
   site: EnhancedSiteInfo;
@@ -28,10 +29,15 @@ const SiteCard = ({ site, className, onSelect }: SiteCardProps) => {
       role="link"
       tabIndex={0}
       className={cn(
-        "cursor-pointer transition-shadow hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "cursor-pointer select-text transition-shadow hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className
       )}
-      onClick={() => onSelect(site.id)}
+      onClick={(e) => {
+        if (shouldSkipNavigationForTextSelection(e)) {
+          return;
+        }
+        onSelect(site.id);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();

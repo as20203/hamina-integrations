@@ -11,7 +11,6 @@ import type {
   ApiResponse,
 } from "@/types/mist";
 import { Badge } from "@repo/ui/components/badge";
-import { Button } from "@repo/ui/components/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@repo/ui/components/table";
 import { cn } from "@repo/ui/lib/utils";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -20,7 +19,8 @@ import { useEffect, useState } from "react";
 import { useQueueService } from "@/lib/queue/queue-service";
 import { formatUnixSeconds } from "@/lib/mist/format";
 import { normalizeDeviceMac } from "@/lib/mist/mac";
-import { ChevronDown, ChevronRight, RefreshCw, Users } from "lucide-react";
+import { shouldSkipNavigationForTextSelection } from "@/lib/skip-navigation-if-text-selection";
+import { RefreshCw, Users } from "lucide-react";
 
 type MistDevicesTableProps = {
   siteId: string;
@@ -107,7 +107,6 @@ const MistDevicesTable = ({
   const queueService = useQueueService();
   const [enhancedData, setEnhancedData] = useState<Map<string, EnhancedDeviceData>>(new Map());
   const [loading, setLoading] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const streamLive = streamStatus === "connected";
 
@@ -160,7 +159,7 @@ const MistDevicesTable = ({
   const showLoadingPlaceholder = devices.length === 0 && devicesLoading;
   const showRefreshOverlay = devices.length > 0 && devicesLoading;
 
-  const colCount = 11;
+  const colCount = 10;
 
   return (
     <div className="relative rounded-xl border bg-card shadow-sm">
@@ -176,7 +175,6 @@ const MistDevicesTable = ({
       <Table aria-busy={devicesLoading || undefined}>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
-            <TableHead className="w-10" aria-label="Expand live stats" />
             <TableHead>Name</TableHead>
             <TableHead>Type</TableHead>
             <TableHead>Status</TableHead>
@@ -206,7 +204,7 @@ const MistDevicesTable = ({
               </TableCell>
             </TableRow>
           ) : (
-            devices.flatMap((device) => {
+            devices.map((device) => {
               const enhanced = enhancedData.get(device.id);
               const inventory = enhanced?.inventory;
               const clientCount = enhanced?.clientCount;
@@ -261,14 +259,18 @@ const MistDevicesTable = ({
                 <span className="text-muted-foreground text-xs">—</span>
               );
 
-              const isOpen = expandedId === device.id;
-              const mainRow = (
+              return (
                 <TableRow
                   key={device.id}
-                  className={cn("cursor-pointer")}
+                  className={cn("cursor-pointer select-text")}
                   tabIndex={0}
                   role="link"
-                  onClick={() => go(device.id)}
+                  onClick={(e) => {
+                    if (shouldSkipNavigationForTextSelection(e)) {
+                      return;
+                    }
+                    go(device.id);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -276,28 +278,6 @@ const MistDevicesTable = ({
                     }
                   }}
                 >
-                  <TableCell
-                    className="w-10"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                    }}
-                  >
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      aria-expanded={isOpen}
-                      aria-label={isOpen ? "Collapse live payload" : "Expand live payload"}
-                      onClick={() => setExpandedId(isOpen ? null : device.id)}
-                    >
-                      {isOpen ? (
-                        <ChevronDown className="h-4 w-4" aria-hidden />
-                      ) : (
-                        <ChevronRight className="h-4 w-4" aria-hidden />
-                      )}
-                    </Button>
-                  </TableCell>
                   <TableCell className="font-medium">{merged?.name || device.name}</TableCell>
                   <TableCell>
                     <Badge variant="outline">{typeLabel(rowType)}</Badge>
@@ -325,20 +305,6 @@ const MistDevicesTable = ({
                   <TableCell>{connectionNode}</TableCell>
                 </TableRow>
               );
-
-              const detailRow =
-                isOpen && live ? (
-                  <TableRow key={`${device.id}-detail`} className="bg-muted/40 hover:bg-muted/40">
-                    <TableCell colSpan={colCount} className="max-w-0 p-4">
-                      <p className="mb-2 text-xs font-medium text-muted-foreground">Live stats payload (stream)</p>
-                      <pre className="max-h-80 overflow-auto rounded-md border bg-background p-3 text-[10px] leading-relaxed">
-                        {JSON.stringify(live, null, 2)}
-                      </pre>
-                    </TableCell>
-                  </TableRow>
-                ) : null;
-
-              return detailRow ? [mainRow, detailRow] : [mainRow];
             })
           )}
         </TableBody>

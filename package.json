@@ -23,9 +23,12 @@
     "lint": "turbo run lint",
     "check-types": "turbo run check-types",
     "start:frontend": "npm run start --workspace frontend",
-    "start:backend": "npm run start --workspace backend"
+    "start:backend": "npm run start --workspace backend",
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
+    "docker:test:e2e": "docker compose --profile hamina --profile e2e build e2e && docker compose --profile hamina --profile e2e run --rm e2e"
   },
   "devDependencies": {
+    "@playwright/test": "^1.51.0",
     "turbo": "^2.5.6"
   },
   "engines": {

@@ -1,5 +1,7 @@
 # Profile `hamina-build`: production images — db + redis + prisma-migrate + backend (apps/backend/Dockerfile) + frontend (apps/frontend/Dockerfile)
 #   docker compose --profile hamina-build up --build
+#
+# Profile `e2e`: one-shot Playwright tests in Docker (`npm run docker:test:e2e`). Requires `hamina` so db/redis/migrate/backend/frontend are available.
 services:
   redis:
     profiles: ["redis", "hamina", "backend", "backend-build", "hamina-build"]
@@ -161,6 +163,26 @@ services:
     environment:
       NODE_ENV: production
       BACKEND_INTERNAL_URL: http://backend-build:4000
+
+  e2e:
+    profiles: ["e2e"]
+    build:
+      context: .
+      dockerfile: e2e/Dockerfile
+    container_name: hamina-e2e
+    environment:
+      PLAYWRIGHT_BASE_URL: http://frontend:3000
+      CI: "true"
+      PLAYWRIGHT_E2E_SITE_ID: ${PLAYWRIGHT_E2E_SITE_ID:-}
+    depends_on:
+      prisma-migrate:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_started
+    volumes:
+      - ./e2e:/app/e2e
+      - ./playwright-report:/app/playwright-report
+      - ./test-results:/app/test-results
 
 volumes:
   postgres_data:

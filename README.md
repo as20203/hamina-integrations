@@ -22,6 +22,15 @@ npm install
 2. **Compose substitution (optional)**  
    Copy **`.env.example`** → **`.env`** in the **repo root** if you want to override defaults for Compose (Postgres credentials, `DATABASE_URL`, Redis URL, etc.). Compose injects these when expanding `${VAR}` in `docker-compose.yml`.
 
+### Run modes (dev vs production)
+
+| Mode | What | Commands |
+|------|------|----------|
+| **Dev (Docker, recommended)** | Hot reload, full stack (Postgres, Redis, migrate, backend, frontend) | `docker compose --profile hamina up --build -d` → UI [http://localhost:3000](http://localhost:3000) |
+| **Dev (host)** | Turbo / per-app `npm run dev` | Requires DB, Redis, and backend reachable; see [Advanced: DB + Redis only on Docker](#advanced-db--redis-only-on-docker) and [Environment variables](#environment-variables). |
+| **Production build (Docker)** | Compiled images (`hamina-build` profile) | `npm run docker:build` (same as `docker compose --profile hamina-build up --build -d`) → UI [http://localhost:3100](http://localhost:3100) |
+| **Production build (local artifacts only)** | Compile without Compose | Root `npm run build` (Turbo builds [`apps/frontend`](apps/frontend/package.json) and [`apps/backend`](apps/backend/package.json)); then `npm run start:frontend` / `npm run start:backend` with env. Postgres and Redis are still typically provided via Docker—see Compose profiles above. |
+
 ### Development stack (hot reload, published UI)
 
 Runs **db**, **redis**, **prisma-migrate** (on profile `hamina`), **backend** (dev image), **frontend** (dev image).
@@ -61,6 +70,7 @@ docker compose --profile hamina-build up --build -d
 | `npm run docker:build` | Production-style stack (`hamina-build` profile), detached |
 | `npm run docker:dev` | `docker compose --profile db --profile backend --profile frontend up --build` (includes **Redis** because the `redis` service also uses the `backend` profile). Does **not** run **`prisma-migrate`**; use **`hamina`** or `npm run docker:migrate` if the DB schema is not up to date. |
 | `npm run docker:migrate` | One-shot Prisma migrate container (`prisma-migrate` profile) |
+| `npm run docker:test:e2e` | Build and run Playwright E2E **inside Docker** against the **`hamina`** stack (`PLAYWRIGHT_BASE_URL=http://frontend:3000`). See [End-to-end tests](#end-to-end-tests-playwright). |
 | `npm run dev --workspace apps/frontend` | Next dev **on host** (you must supply DB/Redis/backend yourself) |
 | `npm run dev --workspace apps/backend` | Express dev **on host** (same) |
 
@@ -76,7 +86,105 @@ Then point **`DATABASE_URL`** / **`DIRECT_DATABASE_URL`** at `localhost:3762`, *
 
 ## Architecture
 
+### End-to-end request path
+
+The browser loads Next.js App Router pages: [`/sites`](<apps/frontend/src/app/(main)/sites/page.tsx>), [`/site/[siteId]`](<apps/frontend/src/app/(main)/site/[siteId]/page.tsx>), and [`/site/[siteId]/devices/[deviceId]`](<apps/frontend/src/app/(main)/site/[siteId]/devices/[deviceId]/page.tsx>).
+
+**BFF (Next.js server):** Route handlers under [`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/) proxy to Express using [`getBackendInternalBaseUrl()`](apps/frontend/src/lib/backend-internal-url.ts). In Docker, set **`BACKEND_INTERNAL_URL`** (e.g. `http://backend:4000`) so the BFF reaches the API on the Compose network.
+
+**Express API:** [`apps/backend/src/routes/mist.routes.ts`](apps/backend/src/routes/mist.routes.ts) (and related controllers/services) exposes `/api/v1/mist/...`, calls **Juniper Mist**, and uses **Redis** (cache plus BullMQ), **Postgres** (Prisma via [`@repo/db`](packages/database)), and **SSE** for queue updates where applicable.
+
+See also: [Docker services](#docker-services), [Environment variables](#environment-variables), and [API Endpoints](#api-endpoints) (BFF vs Express paths).
+
+```mermaid
+flowchart LR
+  subgraph client [Browser]
+    UI[Next_pages]
+  end
+  subgraph next [Next_js_server]
+    BFF["/api/mist/*"]
+  end
+  subgraph express [Express_backend]
+    API["/api/v1/mist/*"]
+    Queue[BullMQ_workers]
+    SSE[SSE_manager]
+  end
+  subgraph data [Infrastructure]
+    Mist[Juniper_Mist_API]
+    Redis[(Redis)]
+    PG[(Postgres)]
+  end
+  UI --> BFF
+  BFF --> API
+  API --> Mist
+  API --> Redis
+  API --> PG
+  Queue --> Redis
+  SSE --> client
+```
+
+### Mist request lifecycle (cache, rate limit, BullMQ, SSE)
+
+For a typical Mist-backed call, traffic flows **browser → Next BFF → Express** ([`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/) → [`apps/backend/src/routes/mist.routes.ts`](apps/backend/src/routes/mist.routes.ts)). The backend then combines **Redis-backed caching**, optional **queuing** when limits are hit, and **Server-Sent Events** so the UI can wait for asynchronous work without polling.
+
+1. **Redis application cache** — Several service paths use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) (for example [org inventory and site client stats](apps/backend/src/services/mist.service.ts)): read Redis first (with an in-memory fallback if Redis is down); on a miss, run the loader, then store the JSON with a TTL. A hot cache short-circuits before any Mist or queue work.
+
+2. **Mist HTTP call** — On cache miss, handlers call Mist ([`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts)) with retries on 429/5xx.
+
+3. **Rate limiter and BullMQ** — [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts) tracks request rate and concurrency (defaults align with Mist-style limits). If the limiter decides the call cannot run immediately, or Mist returns **429**, the work is enqueued on the **`mist-api`** BullMQ queue ([`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts)). Jobs are stored in **Redis** (same broker connection as cache).
+
+4. **Worker and SSE** — The BullMQ **worker** runs the outbound HTTP request. It notifies the right browser session via [`sseManager`](apps/backend/src/lib/sse/sse-manager.ts): **`queue-started`**, then **`queue-complete`** or **`queue-error`**, keyed by **`clientId`** and **`requestId`**.
+
+5. **Browser** — The client opens an **EventSource** to the same-origin BFF route [`/api/mist/events/{clientId}`](apps/frontend/src/app/api/mist/events/) (which proxies to Express [`GET /api/v1/mist/events/:clientId`](apps/backend/src/routes/mist.routes.ts)). [`useQueueService` / `QueueService`](apps/frontend/src/lib/queue/queue-service.ts) sends **`X-Client-ID`** on fetches; if the JSON body includes **`isQueued: true`** and a **`requestId`**, it keeps the UI promise pending until the matching SSE message arrives.
+
+Not every handler goes through **`MistRateLimiter.executeRequest`**; many flows use **`mistFetch`** inside a **`getOrSet`** loader (or uncached reads). The sequence diagram below shows the **end-to-end** path—including queue and SSE—so you can see how Redis cache, Mist, BullMQ, and the browser stay aligned when work is deferred.
+
+```mermaid
+sequenceDiagram
+  participant UI as Browser
+  participant BFF as Next_BFF
+  participant API as Express_Mist_routes
+  participant RC as Redis_app_cache
+  participant RL as Rate_limiter
+  participant M as Juniper_Mist
+  participant BQ as BullMQ_mist-api
+  participant W as BullMQ_worker
+  participant SSE as SSE_manager
+
+  UI->>BFF: GET /api/mist/... (optional X-Client-ID)
+  BFF->>API: proxy to /api/v1/mist/...
+  API->>RC: get / getOrSet
+  alt cache hit
+    RC-->>API: cached payload
+    API-->>BFF: 200 JSON
+    BFF-->>UI: response
+  else cache miss
+    API->>RL: execute or enqueue
+    alt under limit, immediate Mist call
+      RL->>M: HTTPS
+      M-->>RL: JSON
+      RL-->>API: data
+      API->>RC: set (TTL)
+      API-->>BFF: 200 JSON
+      BFF-->>UI: response
+    else rate limited or 429
+      RL->>BQ: enqueue job (Redis)
+      API-->>BFF: 200 JSON isQueued plus requestId
+      BFF-->>UI: response
+      Note over UI,BFF: UI EventSource already on /api/mist/events/clientId
+      BQ-->>W: job
+      W->>SSE: queue-started
+      SSE-->>UI: SSE event
+      W->>M: HTTPS
+      M-->>W: JSON
+      W->>SSE: queue-complete or queue-error
+      SSE-->>UI: SSE event resolves pending request
+    end
+  end
+```
+
 ### Frontend (Next.js App Router)
+
 - **Multi-site dashboard** at `/sites` with card-based layout and URL-driven pagination
 - **Per-site views** at `/site/[siteId]` with device management and monitoring
 - **Device detail pages** at `/site/[siteId]/devices/[deviceId]` with inventory and client information
@@ -84,11 +192,22 @@ Then point **`DATABASE_URL`** / **`DIRECT_DATABASE_URL`** at `localhost:3762`, *
 - **Real-time updates** via Server-Sent Events (SSE)
 
 ### Backend (Express.js)
+
 - **3-layer architecture**: Routes → Controllers → Services
 - **Rate limiting** with BullMQ queue system and exponential backoff
 - **Redis caching** with in-memory fallback when Redis is unavailable
 - **Enhanced device detection** using multiple Mist API endpoints
 - **Bull Board dashboard** for queue monitoring with basic authentication
+
+## Repository structure
+
+- [`apps/frontend/`](apps/frontend/) — Next.js App Router, BFF routes, Mist UI ([`src/components/mist/`](apps/frontend/src/components/mist/), [`src/components/sites/`](apps/frontend/src/components/sites/)), queue client ([`src/lib/queue/`](apps/frontend/src/lib/queue/))
+- [`apps/backend/`](apps/backend/) — Express entry [`server.ts`](apps/backend/server.ts), routes, Mist/cache/queue/SSE libraries
+- [`packages/database/`](packages/database/) — Prisma, `@repo/db`
+- [`packages/ts-shared/types/`](packages/ts-shared/types/) — `@repo/types`
+- [`packages/ts-shared/ui/`](packages/ts-shared/ui/) — `@repo/ui`
+- [`docker-compose.yml`](docker-compose.yml), [`scripts/`](scripts/), root [`package.json`](package.json) / [`turbo.json`](turbo.json)
+- [`e2e/`](e2e/) — Playwright config and specs (see below)
 
 ## Features
 
@@ -173,6 +292,48 @@ npm run check-types --workspace apps/backend
 npm run lint --workspace apps/frontend
 npm run lint --workspace apps/backend
 ```
+
+### End-to-end tests (Playwright)
+
+Prerequisites:
+
+- Full stack running with valid Mist credentials (e.g. `docker compose --profile hamina up --build -d`).
+- [`apps/frontend/.env`](apps/frontend/.env.example) configured with **`MIST_API_KEY`** and **`MIST_ORG_ID`** (see [Environment variables](#environment-variables)).
+
+One-time browser install for Playwright:
+
+```bash
+npx playwright install
+```
+
+**`PLAYWRIGHT_BASE_URL`** — Base URL for tests (default `http://localhost:3000`). Use `http://localhost:3100` when exercising the production-style Docker UI (`hamina-build`).
+
+**`PLAYWRIGHT_E2E_SITE_ID`** — Optional. Device detail E2E uses a fixed default site to load the [site devices](<apps/frontend/src/app/(main)/site/[siteId]/page.tsx>) table, then opens the first device from `GET /api/mist/sites/{siteId}/devices`. Set this env var to use another site UUID in your org.
+
+Run tests **on the host** (requires `npx playwright install` as above):
+
+```bash
+npm run test:e2e
+```
+
+Run tests **in Docker** with a single command (no local Chromium install):
+
+```bash
+npm run docker:test:e2e
+```
+
+That runs `docker compose --profile hamina --profile e2e build e2e` and then `docker compose --profile hamina --profile e2e run --rm e2e`. In order:
+
+1. **Image** — [`e2e/Dockerfile`](e2e/Dockerfile) extends the official Playwright image, copies the repo, and runs **`npm ci`** so `@playwright/test` matches the lockfile.
+2. **Compose** — The **`e2e`** service ([`docker-compose.yml`](docker-compose.yml)) joins the default network, depends on **`prisma-migrate`** (`service_completed_successfully`) and **`frontend`** (`service_started`), and sets **`PLAYWRIGHT_BASE_URL=http://frontend:3000`** so tests call the dev UI by Docker DNS (not `localhost`).
+3. **Entrypoint** — [`e2e/docker-entrypoint.sh`](e2e/docker-entrypoint.sh) polls **`PLAYWRIGHT_BASE_URL`** until the app returns HTTP 200, then runs **`npm run test:e2e`**.
+4. **Artifacts** — `playwright-report/` and `test-results/` on the host are bind-mounted from the container so you can open the HTML report after the run.
+
+Optional: set **`PLAYWRIGHT_E2E_SITE_ID`** in your shell or root **`.env`** (Compose interpolation) to override the default site UUID used by the device-detail spec.
+
+Keep the Playwright **image tag** in [`e2e/Dockerfile`](e2e/Dockerfile) aligned with the resolved **`@playwright/test`** version in `package-lock.json` (under `node_modules/@playwright/test`).
+
+Site overview and site-devices specs resolve the **first org site** from the API at runtime. The **device detail** spec targets a **known default site** (overridable via **`PLAYWRIGHT_E2E_SITE_ID`**), loads that site’s device table in the browser, then picks the **first device** from the same devices endpoint and asserts the detail **`h1`**. If Mist returns no data or the API errors, affected specs **skip** with an explanatory message. After a run, open the [HTML report](https://playwright.dev/docs/test-reporters#html-reporter) via `npx playwright show-report` (artifacts under `playwright-report/`).
 
 ### Docker build: `npm` ECONNRESET / network aborted
 
@@ -289,6 +450,10 @@ Redis cache with intelligent fallback:
 - **Redis 8.4** for caching and job queues
 - **PostgreSQL** for application data
 - **Nginx** (optional) for production reverse proxy
+
+## Future improvements
+
+- **Load and rate-limit stress tests** — Add tooling (for example k6, Artillery, or distributed Playwright workers) to simulate **many concurrent users** hitting BFF and Express Mist routes, then observe **Redis cache hit rates**, **BullMQ depth**, **429 / queue enqueue behavior**, and **SSE fan-out** under the configured limits (see [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts)). Run against a non-production Mist org or mocked upstream so org API quotas stay safe.
 
 ## License
 

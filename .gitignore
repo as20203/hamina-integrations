@@ -7,3 +7,6 @@ apps/*/node_modules/
 apps/*/.next/
 dist/
 .DS_Store
+playwright-report/
+test-results/
+blob-report/

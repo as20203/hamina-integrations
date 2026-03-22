@@ -319,51 +319,81 @@ const getOrgInventory = async (filters?: InventoryFilters): Promise<{ devices: I
   );
 };
 
+/** Mist client stat rows use varying keys for the AP reference; normalize for filtering. */
+const apIdFromMistClientRow = (client: Record<string, unknown>): string | undefined => {
+  for (const key of ["ap_id", "ap", "device_id"] as const) {
+    const v = client[key];
+    if (v != null && String(v).trim() !== "") {
+      return String(v).trim();
+    }
+  }
+  return undefined;
+};
+
+const mapMistClientStatsRows = (data: Record<string, unknown>[]): ClientStats[] => {
+  return data.map((client: Record<string, unknown>): ClientStats => {
+    const row: ClientStats = {
+      mac: String(client.mac ?? ""),
+      last_seen: Number(client.last_seen),
+      is_guest: Boolean(client.is_guest),
+    };
+    const apRef = apIdFromMistClientRow(client);
+    if (apRef) {
+      row.ap_id = apRef;
+    }
+    if (client.hostname != null && String(client.hostname) !== "") {
+      row.hostname = String(client.hostname);
+    }
+    if (client.ip != null && String(client.ip) !== "") {
+      row.ip = String(client.ip);
+    }
+    if (client.ssid != null && String(client.ssid) !== "") {
+      row.ssid = String(client.ssid);
+    }
+    if (client.rssi != null && String(client.rssi) !== "" && Number.isFinite(Number(client.rssi))) {
+      row.rssi = Number(client.rssi);
+    }
+    if (client.band != null && String(client.band) !== "") {
+      row.band = String(client.band);
+    }
+    return row;
+  });
+};
+
 // Client stats service methods
 const getSiteClientStats = async (
   siteId: string,
   options?: ClientStatsOptions
 ): Promise<{ clients: ClientStats[]; summary: ClientSummary }> => {
   const cacheKey = `${siteId}:${JSON.stringify(options || {})}`;
-  
+
   return cache.getOrSet(
     cacheKey,
     CACHE_CONFIGS.CLIENT_STATS,
     async () => {
       const params = new URLSearchParams();
-      if (options?.duration) params.append('duration', options.duration);
-      if (options?.limit) params.append('limit', options.limit.toString());
-      if (options?.apId) params.append('ap_id', options.apId);
+      if (options?.duration) {
+        params.append("duration", options.duration);
+      }
+
+      // For a specific AP, Mist's ap_id query param is unreliable; fetch a wider site list and filter by ap_id/ap/device_id.
+      const responseLimit = options?.apId
+        ? Math.min(1000, Math.max(300, (options.limit ?? 100) * 10))
+        : Math.min(1000, options?.limit ?? 100);
+
+      params.append("limit", String(responseLimit));
 
       const endpoint = `https://api.mist.com/api/v1/sites/${siteId}/stats/clients?${params.toString()}`;
-      const data = await mistFetch(endpoint) as Record<string, unknown>[];
-      
-      const clients = data.map((client: Record<string, unknown>): ClientStats => {
-        const row: ClientStats = {
-          mac: String(client.mac ?? ""),
-          last_seen: Number(client.last_seen),
-          is_guest: Boolean(client.is_guest),
-        };
-        if (client.hostname != null && String(client.hostname) !== "") {
-          row.hostname = String(client.hostname);
-        }
-        if (client.ip != null && String(client.ip) !== "") {
-          row.ip = String(client.ip);
-        }
-        if (client.ap_id != null && String(client.ap_id) !== "") {
-          row.ap_id = String(client.ap_id);
-        }
-        if (client.ssid != null && String(client.ssid) !== "") {
-          row.ssid = String(client.ssid);
-        }
-        if (client.rssi != null && String(client.rssi) !== "" && Number.isFinite(Number(client.rssi))) {
-          row.rssi = Number(client.rssi);
-        }
-        if (client.band != null && String(client.band) !== "") {
-          row.band = String(client.band);
-        }
-        return row;
-      });
+      const data = (await mistFetch(endpoint)) as Record<string, unknown>[];
+
+      let clients = mapMistClientStatsRows(data);
+
+      if (options?.apId) {
+        const want = options.apId.trim().toLowerCase();
+        clients = clients.filter((c) => (c.ap_id ?? "").trim().toLowerCase() === want);
+        const cap = options.limit ?? 100;
+        clients = clients.slice(0, cap);
+      }
 
       const summary: ClientSummary = {
         active_clients: clients.length,

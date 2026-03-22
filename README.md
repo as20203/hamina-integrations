@@ -214,7 +214,7 @@ sequenceDiagram
 ### Mist API Integration
 - **Organization sites** listing with pagination
 - **Device inventory** with enhanced switch detection
-- **Client statistics** for wireless access points
+- **Client statistics** for wireless access points — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** (BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site when filtering by AP)
 - **Site summaries** with device counts and status
 - **Real-time device monitoring** with connection status
 

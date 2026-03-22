@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@repo/ui/components/table";
 import { Modal } from "@repo/ui/shared/modal";
-import { Activity, Bluetooth, Cable, Cpu, Gauge, Globe, Radio, Shield, Zap, Users, Package } from "lucide-react";
+import { Activity, Bluetooth, Cable, Cpu, Gauge, Globe, Info, Radio, Shield, Zap, Users, Package } from "lucide-react";
 import { DeviceDetailSection, KvGrid } from "./device-detail-section";
 import { DeviceFloorPlacement } from "./device-floor-placement";
 import { DeviceStatusBadge } from "./device-status-badge";
@@ -45,6 +45,7 @@ const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
   const [clientStats, setClientStats] = useState<ClientStats[]>([]);
   const [loadingInventory, setLoadingInventory] = useState(false);
   const [loadingClients, setLoadingClients] = useState(false);
+  const [connectedClientsInfoOpen, setConnectedClientsInfoOpen] = useState(false);
   
   const raw = device.raw;
   const type = device.type as MistDeviceType;
@@ -102,7 +103,8 @@ const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
   const bleStat = asRecord(raw.ble_stat);
   const redundancy = asRecord(raw.switch_redundancy);
 
-  const clients = num(raw.num_clients);
+  /** Client count from AP stats payload (`num_clients`); may differ from rows in `/stats/clients`. */
+  const numClientsFromApStats = num(raw.num_clients);
   const cpuUtil = num(raw.cpu_util);
   const uptime = num(raw.uptime);
   const rxBps = num(raw.rx_bps);
@@ -150,7 +152,7 @@ const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
             <Activity className="h-4 w-4" />
             Clients
           </div>
-          <p className="mt-1 text-2xl font-bold">{clients ?? "—"}</p>
+          <p className="mt-1 text-2xl font-bold">{numClientsFromApStats ?? "—"}</p>
         </div>
         <div className="rounded-xl border bg-card p-4 shadow-sm">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -393,40 +395,72 @@ const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
 
       {/* Connected Clients Section (for APs) */}
       {device.type === 'ap' && (
-        <DeviceDetailSection title="Connected Clients" icon={Users}>
-          {loadingClients ? (
-            <div className="text-sm text-muted-foreground">Loading clients...</div>
-          ) : clientStats.length > 0 ? (
-            <div className="space-y-2">
-              {clientStats.slice(0, 10).map(client => (
-                <div key={client.mac} className="flex justify-between text-sm border-b pb-2">
-                  <div>
-                    <div className="font-medium">{client.hostname || client.mac}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {client.ip && <span className="mr-2">{client.ip}</span>}
-                      {client.ssid && <span className="mr-2">SSID: {client.ssid}</span>}
-                      {client.is_guest && <Badge variant="outline" className="text-xs">Guest</Badge>}
+        <>
+          <DeviceDetailSection title="Connected Clients" icon={Users}>
+            {loadingClients ? (
+              <div className="text-sm text-muted-foreground">Loading clients...</div>
+            ) : clientStats.length > 0 ? (
+              <div className="space-y-2">
+                {clientStats.slice(0, 10).map(client => (
+                  <div key={client.mac} className="flex justify-between text-sm border-b pb-2">
+                    <div>
+                      <div className="font-medium">{client.hostname || client.mac}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {client.ip && <span className="mr-2">{client.ip}</span>}
+                        {client.ssid && <span className="mr-2">SSID: {client.ssid}</span>}
+                        {client.is_guest && <Badge variant="outline" className="text-xs">Guest</Badge>}
+                      </div>
+                    </div>
+                    <div className="text-right text-xs text-muted-foreground">
+                      {client.rssi && <div>{client.rssi} dBm</div>}
+                      {client.band && <div>{client.band}</div>}
+                      {client.last_seen && (
+                        <div>{formatUnixSeconds(client.last_seen)}</div>
+                      )}
                     </div>
                   </div>
-                  <div className="text-right text-xs text-muted-foreground">
-                    {client.rssi && <div>{client.rssi} dBm</div>}
-                    {client.band && <div>{client.band}</div>}
-                    {client.last_seen && (
-                      <div>{formatUnixSeconds(client.last_seen)}</div>
-                    )}
+                ))}
+                {clientStats.length > 10 && (
+                  <div className="text-xs text-muted-foreground text-center pt-2">
+                    ... and {clientStats.length - 10} more clients
                   </div>
-                </div>
-              ))}
-              {clientStats.length > 10 && (
-                <div className="text-xs text-muted-foreground text-center pt-2">
-                  ... and {clientStats.length - 10} more clients
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No active clients</p>
-          )}
-        </DeviceDetailSection>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span>No devices connected</span>
+                {numClientsFromApStats != null && numClientsFromApStats > 0 ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+                    aria-label="Why the client list can be empty"
+                    onClick={() => setConnectedClientsInfoOpen(true)}
+                  >
+                    <Info className="h-4 w-4" aria-hidden />
+                  </Button>
+                ) : null}
+              </div>
+            )}
+          </DeviceDetailSection>
+
+          <Modal
+            isOpen={connectedClientsInfoOpen}
+            onClose={() => setConnectedClientsInfoOpen(false)}
+            title="Connected clients"
+            contentOnly
+            className="sm:max-w-lg"
+          >
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              Device stats report {numClientsFromApStats ?? 0} client(s) on this AP, but no rows matched this access point
+              in Mist&apos;s <span className="font-mono text-xs">GET /sites/…/stats/clients</span> (after filtering by
+              device id). Clients may be on another page of results, field names may differ in Mist, or stats may be
+              briefly out of sync. Try again after a minute or check <strong>Clients → Wi‑Fi Clients</strong> in the Mist
+              dashboard for this site.
+            </p>
+          </Modal>
+        </>
       )}
 
       <Modal

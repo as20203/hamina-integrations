@@ -125,62 +125,119 @@ flowchart LR
 
 ### Mist request lifecycle (cache, rate limit, BullMQ, SSE)
 
-For a typical Mist-backed call, traffic flows **browser → Next BFF → Express** ([`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/) → [`apps/backend/src/routes/mist.routes.ts`](apps/backend/src/routes/mist.routes.ts)). The backend then combines **Redis-backed caching**, optional **queuing** when limits are hit, and **Server-Sent Events** so the UI can wait for asynchronous work without polling.
+Traffic is **browser →** Next BFF ([`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/)) **→** Express ([`mist.routes.ts`](apps/backend/src/routes/mist.routes.ts)) **→** [`mist.service.ts`](apps/backend/src/services/mist.service.ts). **Cached JSON reads** use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) (Redis + in-memory fallback). On a miss, loaders call [`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts), each gated by [`runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) (per-minute, per-hour, concurrency). **Queue + SSE** ([`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts), [`sse-manager`](apps/backend/src/lib/sse/sse-manager.ts)) applies to browser flows that use [`executeRequest`](apps/backend/src/lib/mist/rate-limiter.ts) / `isQueued` — see the sequence diagram below. **Per-endpoint cache keys and TTLs** are in the [next subsection](#mist-data-endpoints-redis-keys-ttl-and-read-flow).
 
-1. **Redis application cache** — Service paths use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) for org **sites** (per page/limit), **merged site devices** (shared by site summary, device list, and device detail), **org inventory**, and **site client stats**: read Redis first (with in-memory fallback if Redis is down); on a miss, run the loader, then store JSON with a TTL.
+### Mist data endpoints: Redis keys, TTL, and read flow
 
-2. **Mist HTTP call** — On cache miss, [`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts) call Mist with retries on 429/5xx. Each outbound attempt first acquires a slot via [`mistRateLimiter.runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) (rolling **per-minute** and **per-hour** caps plus max concurrency) so traffic stays under org limits (e.g. ~5k/hour); the limiter **waits** with short sleeps instead of failing.
+All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey}`** from [`CACHE_CONFIGS`](apps/backend/src/lib/cache/redis-cache.ts). If Redis errors or is down, [`RedisCache`](apps/backend/src/lib/cache/redis-cache.ts) falls back to an in-process map for **`CACHE_FALLBACK_TTL_MINUTES`** (default 10 min).
 
-3. **Rate limiter and BullMQ** — [`executeRequest`](apps/backend/src/lib/mist/rate-limiter.ts) (browser-driven paths) can still **enqueue** to BullMQ when local limits are hit or Mist returns **429**. Server-side **`mistFetch`** paths use **`runWhenAllowed`** only (no SSE). Jobs live in **Redis** via [`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts).
-
-4. **Worker and SSE** — The BullMQ **worker** runs the outbound HTTP request. It notifies the right browser session via [`sseManager`](apps/backend/src/lib/sse/sse-manager.ts): **`queue-started`**, then **`queue-complete`** or **`queue-error`**, keyed by **`clientId`** and **`requestId`**.
-
-5. **Browser** — The client opens an **EventSource** to the same-origin BFF route [`/api/mist/events/{clientId}`](apps/frontend/src/app/api/mist/events/) (which proxies to Express [`GET /api/v1/mist/events/:clientId`](apps/backend/src/routes/mist.routes.ts)). [`useQueueService` / `QueueService`](apps/frontend/src/lib/queue/queue-service.ts) sends **`X-Client-ID`** on fetches; if the JSON body includes **`isQueued: true`** and a **`requestId`**, it keeps the UI promise pending until the matching SSE message arrives.
-
-Most Mist reads use **`mistFetch`** (throttled by **`runWhenAllowed`**) inside **`getOrSet`** loaders. The sequence diagram below still shows the **queue + SSE** path for deferred browser-initiated work.
+**Cached read flow** (typical `GET` that uses `getOrSet`):
 
 ```mermaid
-sequenceDiagram
-  participant UI as Browser
-  participant BFF as Next_BFF
-  participant API as Express_Mist_routes
-  participant RC as Redis_app_cache
-  participant RL as Rate_limiter
-  participant M as Juniper_Mist
-  participant BQ as BullMQ_mist-api
-  participant W as BullMQ_worker
-  participant SSE as SSE_manager
+flowchart TD
+  BR[Browser]
+  BFF["Next.js BFF /api/mist/*"]
+  EX["Express /api/v1/mist/*"]
+  CTRL[Controller]
+  SVC[mist.service]
+  GOS["cache.getOrSet"]
+  RGET["Redis GET + in-memory fallback read"]
+  RW["mistRateLimiter.runWhenAllowed"]
+  MF["mistFetch / mistFetchWithMeta"]
+  MIST[Juniper_Mist_API]
+  RSET["Redis SETEX + fallback map write"]
+  OUT[JSON_to_client]
 
-  UI->>BFF: GET /api/mist/... (optional X-Client-ID)
-  BFF->>API: proxy to /api/v1/mist/...
-  API->>RC: get / getOrSet
-  alt cache hit
-    RC-->>API: cached payload
-    API-->>BFF: 200 JSON
-    BFF-->>UI: response
-  else cache miss
-    API->>RL: execute or enqueue
-    alt under limit, immediate Mist call
-      RL->>M: HTTPS
-      M-->>RL: JSON
-      RL-->>API: data
-      API->>RC: set (TTL)
-      API-->>BFF: 200 JSON
-      BFF-->>UI: response
-    else rate limited or 429
-      RL->>BQ: enqueue job (Redis)
-      API-->>BFF: 200 JSON isQueued plus requestId
-      BFF-->>UI: response
-      Note over UI,BFF: UI EventSource already on /api/mist/events/clientId
-      BQ-->>W: job
-      W->>SSE: queue-started
-      SSE-->>UI: SSE event
-      W->>M: HTTPS
-      M-->>W: JSON
-      W->>SSE: queue-complete or queue-error
-      SSE-->>UI: SSE event resolves pending request
-    end
+  BR --> BFF
+  BFF --> EX
+  EX --> CTRL
+  CTRL --> SVC
+  SVC --> GOS
+  GOS --> RGET
+  RGET -->|hit| OUT
+  OUT --> CTRL
+  RGET -->|miss| RW
+  RW --> MF
+  MF --> MIST
+  MIST --> MF
+  MF --> RW
+  RW --> GOS
+  GOS --> RSET
+  RSET --> OUT
+```
+
+**Endpoint reference** (Express path; BFF mirrors under `/api/mist/...` — see [API Endpoints](#api-endpoints)).
+
+| BFF (browser) | Express `GET` | Service function | `getOrSet` | Redis `keyPrefix` | Cache key shape | TTL |
+|---------------|---------------|------------------|------------|-------------------|-----------------|-----|
+| `/api/mist/sites` | `/api/v1/mist/sites` | `getOrgSites` | Direct | `mist:org:sites` | `{orgId}:{page}:{limit}` | **300 s** (5 min) |
+| `/api/mist/sites/[siteId]/site-summary` | `/api/v1/mist/sites/:siteId/site-summary` | `getSiteSummary` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** |
+| `/api/mist/sites/[siteId]/devices` | `/api/v1/mist/sites/:siteId/devices` | `getDeviceList` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** + in-memory filter |
+| `/api/mist/sites/.../devices/[deviceId]` | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** + find device |
+| `/api/mist/inventory` | `/api/v1/mist/inventory` | `getOrgInventory` | Direct | `mist:inventory:org` | `{orgId}:{JSON.stringify(filters)}` | **900 s** (15 min) |
+| `/api/mist/sites/[siteId]/client-stats` | `/api/v1/mist/sites/:siteId/client-stats` | `getSiteClientStats` | Direct | `mist:clients:site` | `{siteId}:{JSON.stringify(options)}` | **120 s** (2 min) |
+
+**Merged devices loader** (cache miss for `mist:merged:devices:{siteId}`): two parallel Mist calls — `GET /api/v1/sites/{id}/stats/devices` and `GET /api/v1/sites/{id}/devices` — then merged in [`buildMergedDevices`](apps/backend/src/services/mist.service.ts). **Org sites loader**: `mistFetchWithMeta` to `GET /api/v1/orgs/{orgId}/sites` with `page`/`limit`.
+
+**Not application-JSON cached** (no `getOrSet` on the response body):
+
+| Express route | Role |
+|---------------|------|
+| `GET /api/v1/mist/events/:clientId` | Long-lived **SSE** stream ([`sseManager.addClient`](apps/backend/src/lib/sse/sse-manager.ts)). |
+| `GET /api/v1/mist/queue/status` | Live **BullMQ** + SSE stats (reads queue state in Redis, not a Mist payload cache). |
+
+**Throttling (all `mistFetch` / `mistFetchWithMeta` loaders)** — Before each Mist HTTPS request, [`runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) waits until there is capacity under rolling **per-minute** (`MIST_MAX_REQUESTS_PER_MINUTE`, default **300**), **per-hour** (`MIST_MAX_REQUESTS_PER_HOUR`, default **5000**), and **10** concurrent calls. Retries after 429/5xx count as separate attempts. Env vars: [Environment variables](#environment-variables).
+
+**BullMQ worker** jobs use raw `fetch` in [`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts) (not `mistFetch`); they do **not** consume `runWhenAllowed` slots.
+
+**Reserved `CACHE_CONFIGS` (not used by `mist.service` today):** `mist:clients:summary`, `mist:device`, `mist:site:summary` — present in [`redis-cache.ts`](apps/backend/src/lib/cache/redis-cache.ts) for future use.
+
+**Queue + SSE flow** — Read this top to bottom. **Rectangles** are systems or outcomes; **diamonds** are decisions. For most Mist **read** endpoints, a cache miss uses **`runWhenAllowed`** then **`mistFetch`** to Juniper Mist (not the browser queue path). The **background queue** branch applies when the API responds with **`isQueued`** and a **`requestId`**, and the browser already has an **EventSource** on **`/api/mist/events/{clientId}`**.
+
+```mermaid
+flowchart TD
+  subgraph client_side["Client side (user device)"]
+    Browser["Web browser"]
+    NextBFF["Next.js Backend-for-Frontend\nSame-origin routes under /api/mist/…\nServer forwards to Express using BACKEND_INTERNAL_URL"]
   end
+
+  subgraph server_side["Our backend (Express + Redis + workers)"]
+    ExpressMist["Express Mist API\nRoutes under /api/v1/mist/…"]
+    CacheRead{"Is there a cached JSON result\nfor this request in Redis?\n(Service layer uses getOrSet.)"}
+    ResponseOk["HTTP 200 — return JSON body\nto the Next.js server"]
+    LimitChoice{"Rate limiter choice\nRun the Mist call now,\nor put work on the background queue?"}
+    MistLive["Juniper Mist — live HTTPS call\nApplication uses mistFetch after runWhenAllowed"]
+    CacheWrite["Store JSON in Redis with a time-to-live\nand update in-memory fallback if Redis fails"]
+    JobQueue["BullMQ mist-api queue\nJob data lives in Redis"]
+    ResponseQueued["HTTP 200 — JSON tells the UI\nthe work is queued (isQueued, requestId)"]
+    BackgroundWorker["BullMQ worker process\nRuns jobs one after another"]
+    MistWorker["Juniper Mist — HTTPS call\nfrom the worker (plain fetch, not mistFetch)"]
+    Events["Server-Sent Events manager\nSends queue-started, queue-complete, queue-error"]
+  end
+
+  Browser -->|"Step 1 — User or app calls GET /api/mist/…\nOptional header X-Client-ID for queue correlation"| NextBFF
+  NextBFF -->|"Step 2 — Next.js server proxies to internal Express URL"| ExpressMist
+  ExpressMist -->|"Step 3 — Controller asks the service; service reads cache"| CacheRead
+
+  CacheRead -->|"Yes — cache hit"| ResponseOk
+  ResponseOk -->|"Step 4 — Next.js returns the same JSON to the browser"| NextBFF
+  NextBFF -->|"Step 5 — Browser renders or continues"| Browser
+
+  CacheRead -->|"No — cache miss"| LimitChoice
+  LimitChoice -->|"Run now — under per-minute, per-hour,\nand concurrency limits"| MistLive
+  MistLive -->|"Mist returns data"| CacheWrite
+  CacheWrite -->|"Step 4 — Same success path as a cache hit"| ResponseOk
+
+  LimitChoice -->|"Defer — local limits full or Mist sent 429\nWork is enqueued for later"| JobQueue
+  JobQueue -->|"Immediate response while work waits in queue"| ResponseQueued
+  ResponseQueued --> NextBFF
+  NextBFF --> Browser
+
+  JobQueue -->|"Worker claims the job"| BackgroundWorker
+  BackgroundWorker -->|"Outbound request to Mist"| MistWorker
+  MistWorker -->|"Response body for the job"| BackgroundWorker
+  BackgroundWorker -->|"Push events to the right browser session"| Events
+  Events -->|"Open channel — browser uses EventSource on\nGET /api/mist/events/ plus that session client id"| Browser
 ```
 
 ### Frontend (Next.js App Router)

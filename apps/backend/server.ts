@@ -3,6 +3,7 @@ import express, { type Express } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerRoutes } from "./src/index.js";
+import { shutdownMistStatsHub } from "./src/lib/mist/mist-device-stats-stream.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -51,6 +52,7 @@ const start = (): void => {
 
   const shutdown = (signal: NodeJS.Signals): void => {
     console.log(`[backend] received ${signal}, shutting down...`);
+    shutdownMistStatsHub();
     server.close(() => {
       process.exit(0);
     });

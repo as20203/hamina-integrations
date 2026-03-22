@@ -4,8 +4,10 @@ import {
   getDeviceListController,
   getOrgSitesController,
   getSiteSummaryController,
+  getSiteDevicesCatalogController,
   getOrgInventoryController,
   getSiteClientStatsController,
+  streamSiteDeviceStatsController,
 } from "../controllers/mist.controller.js";
 import { validateMistDeviceQuery } from "../middleware/mist-query.middleware.js";
 import { sseManager } from "../lib/sse/sse-manager.js";
@@ -17,6 +19,8 @@ const mistRouter = Router();
 mistRouter.get("/sites", getOrgSitesController);
 mistRouter.get("/sites/:siteId/site-summary", getSiteSummaryController);
 mistRouter.get("/sites/:siteId/devices", validateMistDeviceQuery, getDeviceListController);
+mistRouter.get("/sites/:siteId/devices-catalog", getSiteDevicesCatalogController);
+mistRouter.get("/sites/:siteId/devices-stats/stream", streamSiteDeviceStatsController);
 mistRouter.get("/sites/:siteId/devices/:deviceId", getDeviceDetailController);
 
 // New inventory and client stats routes

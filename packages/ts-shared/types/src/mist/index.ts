@@ -126,3 +126,36 @@ export interface DeviceFilters {
   type?: MistDeviceType;
   status?: MistDeviceStatus;
 }
+
+/** Payload shape from Mist WebSocket `.../stats/devices` stream (`data` field). */
+export interface MistDeviceStreamStats {
+  mac?: string;
+  id?: string;
+  version?: string;
+  ip?: string;
+  ext_ip?: string;
+  power_src?: string;
+  uptime?: number;
+  last_seen?: number;
+  num_clients?: number;
+  rx_bytes?: number;
+  tx_bytes?: number;
+  rx_pkts?: number;
+  tx_pkts?: number;
+  tx_bps?: number;
+  rx_bps?: number;
+  ip_stat?: Record<string, unknown>;
+  radio_stat?: Record<string, unknown>;
+  port_stat?: Record<string, unknown>;
+  cpu_stat?: Record<string, unknown>;
+  memory_stat?: Record<string, unknown>;
+  lldp_stat?: Record<string, unknown>;
+  l2tp_stat?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export type MistDeviceStatsStreamStatus = "connected" | "reconnecting" | "disconnected" | "error" | "idle";
+
+export type MistDeviceStatsSseMessage =
+  | { type: "stream_status"; status: MistDeviceStatsStreamStatus; message?: string }
+  | { type: "device_stats"; channel?: string; data: MistDeviceStreamStats };

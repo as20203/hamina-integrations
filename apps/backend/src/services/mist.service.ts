@@ -72,8 +72,59 @@ const toDeviceType = (record: Record<string, unknown>): MistDeviceType => {
   return "unknown";
 };
 
+const truthyConnection = (v: unknown): boolean | undefined => {
+  if (typeof v === "boolean") {
+    return v;
+  }
+  if (typeof v === "number" && (v === 0 || v === 1)) {
+    return v === 1;
+  }
+  if (typeof v === "string") {
+    const s = v.toLowerCase().trim();
+    if (["true", "1", "yes", "up", "online", "connected", "active"].includes(s)) {
+      return true;
+    }
+    if (["false", "0", "no", "down", "offline", "disconnected", "inactive"].includes(s)) {
+      return false;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Map Mist device / stats rows to a coarse UI status. Mist uses many shapes (`connected` bool/string, `status` enums, etc.).
+ */
 const toDeviceStatus = (record: Record<string, unknown>): MistDeviceStatus => {
-  const statusStr = String(record.status || record.connection_status || "").toLowerCase();
+  const fromBool =
+    truthyConnection(record.connected) ??
+    truthyConnection(record.device_connected) ??
+    truthyConnection(record.deviceConnected) ??
+    truthyConnection(record.cloud_connected) ??
+    truthyConnection(record.lan_connected) ??
+    truthyConnection(record.l2tp_connected) ??
+    truthyConnection(record.wan_up);
+  if (fromBool === true) {
+    return "connected";
+  }
+  if (fromBool === false) {
+    return "disconnected";
+  }
+
+  if (truthyConnection(record.disabled) === true) {
+    return "disconnected";
+  }
+
+  const statusStr = String(
+    record.status ??
+      record.connection_status ??
+      record.conn_status ??
+      record.device_status ??
+      record.cloud_connection_state ??
+      record.wan_status ??
+      record.oper_state ??
+      record.operational_state ??
+      ""
+  ).toLowerCase();
   if (statusStr.includes("connected") || statusStr.includes("up") || statusStr.includes("online")) {
     return "connected";
   }
@@ -84,9 +135,7 @@ const toDeviceStatus = (record: Record<string, unknown>): MistDeviceStatus => {
   ) {
     return "disconnected";
   }
-  if (typeof record.connected === "boolean") {
-    return record.connected ? "connected" : "disconnected";
-  }
+
   return "unknown";
 };
 
@@ -98,6 +147,8 @@ const getDeviceKey = (record: Record<string, unknown>): string => {
     String(record.serial || "")
   );
 };
+
+const normalizeMacForMatch = (raw: string): string => raw.replace(/[^a-f0-9]/gi, "").toLowerCase();
 
 const normalizeDevice = (stats: Record<string, unknown>, config?: Record<string, unknown>): MistDeviceDetail => {
   const merged = { ...config, ...stats };
@@ -146,10 +197,110 @@ const fetchSiteStatsDevices = async (siteId: string): Promise<Record<string, unk
   return asArray(data);
 };
 
-const fetchSiteDevices = async (siteId: string): Promise<Record<string, unknown>[]> => {
+const CATALOG_PAGE_LIMIT = 100;
+
+/** All site devices from Mist `GET /sites/{id}/devices` (paginated AP + switch), deduped by device key. */
+const fetchSiteDevicesRawMerged = async (siteId: string): Promise<Record<string, unknown>[]> => {
+  resolveSiteId(siteId);
+  const [apRows, switchRows] = await Promise.all([
+    paginateAllSiteDevicesOfType(siteId, "ap"),
+    paginateAllSiteDevicesOfType(siteId, "switch"),
+  ]);
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const row of apRows) {
+    const key = getDeviceKey(row);
+    if (key) {
+      byKey.set(key, row);
+    }
+  }
+  for (const row of switchRows) {
+    const key = getDeviceKey(row);
+    if (key && !byKey.has(key)) {
+      byKey.set(key, row);
+    }
+  }
+  return Array.from(byKey.values());
+};
+
+const fetchSiteDevicesCatalogPage = async (
+  siteId: string,
+  page: number,
+  type?: string
+): Promise<{ rows: Record<string, unknown>[]; done: boolean }> => {
   const id = resolveSiteId(siteId);
-  const data = await mistFetch<unknown>(`/api/v1/sites/${id}/devices`);
-  return asArray(data);
+  const query: Record<string, string | undefined> = {
+    limit: String(CATALOG_PAGE_LIMIT),
+    page: String(page),
+  };
+  if (type) {
+    query.type = type;
+  }
+  const { data } = await mistFetchWithMeta<unknown>(`/api/v1/sites/${id}/devices`, query);
+  const rows = asArray(data);
+  const done = rows.length < CATALOG_PAGE_LIMIT || rows.length === 0;
+  return { rows, done };
+};
+
+const paginateAllSiteDevicesOfType = async (siteId: string, type: string): Promise<Record<string, unknown>[]> => {
+  const all: Record<string, unknown>[] = [];
+  let page = 1;
+  const maxPages = 200;
+  while (page <= maxPages) {
+    const { rows, done } = await fetchSiteDevicesCatalogPage(siteId, page, type);
+    all.push(...rows);
+    if (done || rows.length === 0) {
+      break;
+    }
+    page += 1;
+  }
+  return all;
+};
+
+const catalogRowToSummary = (record: Record<string, unknown>): DeviceSummary => {
+  const id = getDeviceKey(record);
+  const summary: DeviceSummary = {
+    id: id || "unknown",
+    name: String(record.name || record.hostname || record.device_name || id || "Unknown Device"),
+    type: toDeviceType(record),
+    status: toDeviceStatus(record),
+  };
+  if (record.model != null && String(record.model) !== "") {
+    summary.model = String(record.model);
+  }
+  if (record.mac != null && String(record.mac) !== "") {
+    summary.mac = String(record.mac);
+  }
+  if (record.serial != null && String(record.serial) !== "") {
+    summary.serial = String(record.serial);
+  }
+  if (record.ip != null && String(record.ip) !== "") {
+    summary.ip = String(record.ip);
+  }
+  return summary;
+};
+
+const siteCatalogMemoryCache = new Map<string, { expiresAt: number; list: DeviceSummary[] }>();
+const SITE_CATALOG_MEMORY_TTL_MS = 45_000;
+
+const fetchSiteDevicesCatalogMerged = async (siteId: string): Promise<DeviceSummary[]> => {
+  const raw = await fetchSiteDevicesRawMerged(siteId);
+  return raw.map((row) => catalogRowToSummary(row));
+};
+
+/**
+ * Full site device inventory from Mist `GET /api/v1/sites/{id}/devices` (paginated AP + switch passes, deduped).
+ * Short in-memory TTL so the site dashboard and the live-stats WebSocket hub don’t double-hit Mist on every page load.
+ */
+const getSiteDevicesCatalog = async (siteId: string): Promise<DeviceSummary[]> => {
+  const id = resolveSiteId(siteId);
+  const now = Date.now();
+  const hit = siteCatalogMemoryCache.get(id);
+  if (hit && hit.expiresAt > now) {
+    return hit.list;
+  }
+  const list = await fetchSiteDevicesCatalogMerged(siteId);
+  siteCatalogMemoryCache.set(id, { expiresAt: now + SITE_CATALOG_MEMORY_TTL_MS, list });
+  return list;
 };
 
 const buildMergedDevices = async (siteId: string): Promise<MistDeviceDetail[]> => {
@@ -157,7 +308,7 @@ const buildMergedDevices = async (siteId: string): Promise<MistDeviceDetail[]> =
   return cache.getOrSet(id, CACHE_CONFIGS.SITE_INVENTORY, async () => {
     const [statsDevices, siteDevices] = await Promise.all([
       fetchSiteStatsDevices(siteId),
-      fetchSiteDevices(siteId),
+      fetchSiteDevicesRawMerged(siteId),
     ]);
     const byKey = new Map<string, Record<string, unknown>>();
     siteDevices.forEach((device) => {
@@ -234,69 +385,99 @@ const getOrgSites = async (
   });
 };
 
-const getSiteSummary = async (siteId: string): Promise<SiteSummary> => {
-  const devices = await buildMergedDevices(siteId);
-  const summary: SiteSummary = {
-    totalDevices: devices.length,
-    byType: {
-      ap: { total: 0, connected: 0, disconnected: 0 },
-      switch: { total: 0, connected: 0, disconnected: 0 },
-      unknown: { total: 0, connected: 0, disconnected: 0 },
-    },
-  };
-
-  devices.forEach((device) => {
-    const bucket =
-      device.type === "ap"
-        ? summary.byType.ap
-        : device.type === "switch"
-          ? summary.byType.switch
-          : summary.byType.unknown;
-    bucket.total += 1;
-    if (device.status === "connected") {
-      bucket.connected += 1;
-    } else if (device.status === "disconnected") {
-      bucket.disconnected += 1;
-    }
-  });
-
-  return summary;
-};
-
 const getDeviceList = async (
   siteId: string,
   type?: DeviceTypeFilter,
   status?: DeviceStatusFilter
 ): Promise<MistDeviceDetail[]> => {
-  const devices = await buildMergedDevices(siteId);
+  const raw = await buildMergedDevices(siteId);
+  const devices = await enrichUnknownStatusFromOrgInventory(resolveSiteId(siteId), raw);
   return filterDevices(devices, type, status);
 };
 
+const fetchSiteDeviceConfigById = async (siteId: string, deviceId: string): Promise<Record<string, unknown> | null> => {
+  const sid = resolveSiteId(siteId);
+  const enc = encodeURIComponent(deviceId.trim());
+  try {
+    const data = await mistFetch<unknown>(`/api/v1/sites/${sid}/devices/${enc}`);
+    const row = asRecord(data);
+    return Object.keys(row).length > 0 ? row : null;
+  } catch {
+    return null;
+  }
+};
+
 const getDeviceDetail = async (siteId: string, deviceId: string): Promise<MistDeviceDetail | null> => {
-  const devices = await buildMergedDevices(siteId);
-  return devices.find((device) => device.id === deviceId) || null;
+  const decoded = decodeURIComponent(deviceId).trim();
+  if (!decoded) {
+    return null;
+  }
+
+  const rawList = await buildMergedDevices(siteId);
+  const devices = await enrichUnknownStatusFromOrgInventory(resolveSiteId(siteId), rawList);
+  const fromList =
+    devices.find((device) => device.id === decoded) ||
+    (normalizeMacForMatch(decoded).length >= 6
+      ? devices.find((d) => d.mac && normalizeMacForMatch(d.mac) === normalizeMacForMatch(decoded))
+      : undefined);
+  if (fromList) {
+    return fromList;
+  }
+
+  const direct = await fetchSiteDeviceConfigById(siteId, decoded);
+  if (!direct) {
+    return null;
+  }
+
+  if (toDeviceType(direct) !== "ap") {
+    return normalizeDevice(direct);
+  }
+
+  const key = getDeviceKey(direct);
+  const statsDevices = await fetchSiteStatsDevices(siteId);
+  const statsRow =
+    statsDevices.find((s) => getDeviceKey(s) === key) ||
+    (String(direct.mac || "").length >= 6
+      ? statsDevices.find(
+          (s) => normalizeMacForMatch(String(s.mac || "")) === normalizeMacForMatch(String(direct.mac || ""))
+        )
+      : undefined);
+  if (statsRow) {
+    return normalizeDevice(statsRow, direct);
+  }
+  return normalizeDevice(direct);
 };
 
 // Inventory service methods
 const getOrgInventory = async (filters?: InventoryFilters): Promise<{ devices: InventoryDevice[]; meta: PaginationMeta }> => {
   const { orgId } = getMistConfig();
   const cacheKey = `${orgId}:${JSON.stringify(filters || {})}`;
-  
+
   return cache.getOrSet(
     cacheKey,
     CACHE_CONFIGS.ORG_INVENTORY,
     async () => {
-      const params = new URLSearchParams();
-      if (filters?.siteId) params.append('site_id', filters.siteId);
-      if (filters?.type) params.append('type', filters.type);
-      if (filters?.connected !== undefined) params.append('connected', filters.connected.toString());
-      if (filters?.limit) params.append('limit', filters.limit.toString());
-      if (filters?.page) params.append('page', filters.page.toString());
+      const limit = filters?.limit ?? 50;
+      const page = filters?.page ?? 1;
+      const query: Record<string, string | undefined> = {
+        limit: String(limit),
+        page: String(page),
+      };
+      if (filters?.siteId) {
+        query.site_id = filters.siteId;
+      }
+      if (filters?.type) {
+        query.type = filters.type;
+      }
+      if (filters?.connected !== undefined) {
+        query.connected = filters.connected ? "true" : "false";
+      }
 
-      const endpoint = `https://api.mist.com/api/v1/orgs/${orgId}/inventory?${params.toString()}`;
-      const { data, headers } = await mistFetchWithMeta(endpoint);
-      
-      const devices = (data as Record<string, unknown>[]).map((device: Record<string, unknown>): InventoryDevice => {
+      const path = `/api/v1/orgs/${orgId}/inventory`;
+      const { data, headers } = await mistFetchWithMeta<unknown>(path, query);
+
+      const rows = asArray(data);
+      const devices = rows.map((device: Record<string, unknown>): InventoryDevice => {
         const row: InventoryDevice = {
           id: String(device.id),
           mac: String(device.mac ?? ""),
@@ -319,10 +500,81 @@ const getOrgInventory = async (filters?: InventoryFilters): Promise<{ devices: I
         return row;
       });
 
-      const meta = readPaginationMeta(headers, filters?.limit || 50, filters?.page || 1);
+      const meta = readPaginationMeta(headers, page, limit);
       return { devices, meta: { total: meta.total, page: meta.page, limit: meta.limit } };
     }
   );
+};
+
+/** Fill `unknown` connection status from org inventory (helps switches where site `/devices` omits status fields). */
+const enrichUnknownStatusFromOrgInventory = async (
+  siteId: string,
+  devices: MistDeviceDetail[]
+): Promise<MistDeviceDetail[]> => {
+  if (!devices.some((d) => d.status === "unknown")) {
+    return devices;
+  }
+  try {
+    const { devices: inv } = await getOrgInventory({ siteId, limit: 1000, page: 1 });
+    if (inv.length === 0) {
+      return devices;
+    }
+    const byId = new Map(inv.map((r) => [r.id, r]));
+    const byMac = new Map<string, InventoryDevice>();
+    for (const r of inv) {
+      if (r.mac) {
+        const k = normalizeMacForMatch(r.mac);
+        if (k.length >= 6) {
+          byMac.set(k, r);
+        }
+      }
+    }
+    return devices.map((d) => {
+      if (d.status !== "unknown") {
+        return d;
+      }
+      const invRow =
+        byId.get(d.id) ??
+        (d.mac && normalizeMacForMatch(d.mac).length >= 6 ? byMac.get(normalizeMacForMatch(d.mac)) : undefined);
+      if (!invRow) {
+        return d;
+      }
+      return { ...d, status: invRow.connected ? ("connected" as const) : ("disconnected" as const) };
+    });
+  } catch {
+    return devices;
+  }
+};
+
+const getSiteSummary = async (siteId: string): Promise<SiteSummary> => {
+  const raw = await buildMergedDevices(siteId);
+  const devices = await enrichUnknownStatusFromOrgInventory(resolveSiteId(siteId), raw);
+  const summary: SiteSummary = {
+    totalDevices: devices.length,
+    byType: {
+      ap: { total: 0, connected: 0, disconnected: 0 },
+      switch: { total: 0, connected: 0, disconnected: 0 },
+      unknown: { total: 0, connected: 0, disconnected: 0 },
+    },
+  };
+
+  devices.forEach((device) => {
+    const bucket =
+      device.type === "ap"
+        ? summary.byType.ap
+        : device.type === "switch"
+          ? summary.byType.switch
+          : summary.byType.unknown;
+    bucket.total += 1;
+    if (device.status === "connected") {
+      bucket.connected += 1;
+    } else {
+      // disconnected, or unknown (common for switches with no WS/REST link state) → offline for cards
+      bucket.disconnected += 1;
+    }
+  });
+
+  return summary;
 };
 
 /** Mist client stat rows use varying keys for the AP reference; normalize for filtering. */
@@ -426,9 +678,10 @@ export const mistService = {
   getOrgSites,
   getOrgInventory,
   getSiteClientStats,
+  getSiteDevicesCatalog,
 };
 
-export { getOrgSites, getSiteSummary, getDeviceList, getDeviceDetail };
+export { getOrgSites, getSiteSummary, getDeviceList, getDeviceDetail, getSiteDevicesCatalog };
 export type { 
   DeviceTypeFilter, 
   DeviceStatusFilter,

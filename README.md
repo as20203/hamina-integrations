@@ -171,19 +171,21 @@ flowchart TD
 | BFF (browser) | Express `GET` | Service function | `getOrSet` | Redis `keyPrefix` | Cache key shape | TTL |
 |---------------|---------------|------------------|------------|-------------------|-----------------|-----|
 | `/api/mist/sites` | `/api/v1/mist/sites` | `getOrgSites` | Direct | `mist:org:sites` | `{orgId}:{page}:{limit}` | **300 s** (5 min) |
-| `/api/mist/sites/[siteId]/site-summary` | `/api/v1/mist/sites/:siteId/site-summary` | `getSiteSummary` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** |
-| `/api/mist/sites/[siteId]/devices` | `/api/v1/mist/sites/:siteId/devices` | `getDeviceList` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** + in-memory filter |
-| `/api/mist/sites/.../devices/[deviceId]` | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail` | Via `buildMergedDevices` | `mist:merged:devices` | `{siteId}` | **300 s** + find device |
+| `/api/mist/sites/[siteId]/site-summary` | `/api/v1/mist/sites/:siteId/site-summary` | `getSiteSummary` | Via `buildMergedDevices` | `mist:merged:devices:v2` | `{siteId}` | **300 s** |
+| `/api/mist/sites/[siteId]/devices-catalog` | `/api/v1/mist/sites/:siteId/devices-catalog` | `getSiteDevicesCatalog` | **None** (live Mist pagination) | — | — | **Uncached** |
+| `/api/mist/sites/[siteId]/devices` | `/api/v1/mist/sites/:siteId/devices` | `getDeviceList` | Via `buildMergedDevices` | `mist:merged:devices:v2` | `{siteId}` | **300 s** + in-memory filter |
+| `/api/mist/sites/.../devices/[deviceId]` | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail` | `buildMergedDevices` + Mist `GET …/devices/{id}` fallback | `mist:merged:devices:v2` (+ live Mist read on miss) | `{siteId}` | **300 s** |
 | `/api/mist/inventory` | `/api/v1/mist/inventory` | `getOrgInventory` | Direct | `mist:inventory:org` | `{orgId}:{JSON.stringify(filters)}` | **900 s** (15 min) |
 | `/api/mist/sites/[siteId]/client-stats` | `/api/v1/mist/sites/:siteId/client-stats` | `getSiteClientStats` | Direct | `mist:clients:site` | `{siteId}:{JSON.stringify(options)}` | **120 s** (2 min) |
 
-**Merged devices loader** (cache miss for `mist:merged:devices:{siteId}`): two parallel Mist calls — `GET /api/v1/sites/{id}/stats/devices` and `GET /api/v1/sites/{id}/devices` — then merged in [`buildMergedDevices`](apps/backend/src/services/mist.service.ts). **Org sites loader**: `mistFetchWithMeta` to `GET /api/v1/orgs/{orgId}/sites` with `page`/`limit`.
+**Merged devices loader** (cache miss for `mist:merged:devices:v2:{siteId}`): `GET /api/v1/sites/{id}/stats/devices` plus **paginated** `GET /api/v1/sites/{id}/devices` for **AP and switch**, merged in [`buildMergedDevices`](apps/backend/src/services/mist.service.ts). **Device detail** uses the merged list when possible, otherwise **Mist `GET /api/v1/sites/{id}/devices/{device_id}`** (e.g. switches). **Org sites loader**: `mistFetchWithMeta` to `GET /api/v1/orgs/{orgId}/sites` with `page`/`limit`.
 
 **Not application-JSON cached** (no `getOrSet` on the response body):
 
 | Express route | Role |
 |---------------|------|
 | `GET /api/v1/mist/events/:clientId` | Long-lived **SSE** stream ([`sseManager.addClient`](apps/backend/src/lib/sse/sse-manager.ts)). |
+| `GET /api/v1/mist/sites/:siteId/devices-stats/stream` | **SSE** proxy of Mist **WebSocket** `/api-ws/v1/stream` subscribed to `/sites/{siteId}/stats/devices` ([`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts)). |
 | `GET /api/v1/mist/queue/status` | Live **BullMQ** + SSE stats (reads queue state in Redis, not a Mist payload cache). |
 
 **Throttling (all `mistFetch` / `mistFetchWithMeta` loaders)** — Before each Mist HTTPS request, [`runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) waits until there is capacity under rolling **per-minute** (`MIST_MAX_REQUESTS_PER_MINUTE`, default **300**), **per-hour** (`MIST_MAX_REQUESTS_PER_HOUR`, default **5000**), and **10** concurrent calls. Retries after 429/5xx count as separate attempts. Env vars: [Environment variables](#environment-variables).
@@ -314,6 +316,7 @@ Templates live in:
 | `MIST_API_KEY` | **Yes** (runtime) | Backend `getMistConfig()` | Loaded from `apps/frontend/.env` in Docker. |
 | `MIST_ORG_ID` | **Yes** | Backend | Same. |
 | `MIST_API_BASE_URL` | No | Backend | Default `https://api.mist.com`. |
+| `MIST_WS_BASE_URL` | No | Backend | Live-stats WebSocket host (default: REST `api.*` → `api-ws.*`, e.g. `wss://api-ws.mist.com`). See [`getMistWsBaseUrl`](apps/backend/src/lib/mist/config.ts). |
 | `MIST_SITE_ID` | No | Backend | Optional default site in dev. |
 | `DATABASE_URL` | Yes for DB/Prisma | `@repo/db` / Prisma, compose defaults | In Docker, compose sets `postgresql://...@db:5432/...`. |
 | `DIRECT_DATABASE_URL` | Yes for migrations | Prisma / migrate service | Often same as `DATABASE_URL`. |
@@ -412,6 +415,8 @@ Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeou
 - `GET /api/mist/sites` - Organization sites with pagination
 - `GET /api/mist/sites/[siteId]/site-summary` - Site device summary
 - `GET /api/mist/sites/[siteId]/devices` - Site devices with filtering
+- `GET /api/mist/sites/[siteId]/devices-catalog` - Paginated Mist `GET /sites/{id}/devices` (AP + switch) for site table rows
+- `GET /api/mist/sites/[siteId]/devices-stats/stream` - SSE live device stats (Mist WebSocket, same-origin)
 - `GET /api/mist/sites/[siteId]/devices/[deviceId]` - Device details
 - `GET /api/mist/inventory` - Organization inventory with filtering
 - `GET /api/mist/sites/[siteId]/client-stats` - Site client statistics
@@ -420,6 +425,8 @@ Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeou
 - `GET /api/v1/mist/sites` - Org sites (cached **5min** per org/page/limit)
 - `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary (uses **5min** merged-devices cache per site)
 - `GET /api/v1/mist/sites/:siteId/devices` - Site devices (same **5min** merged-devices cache)
+- `GET /api/v1/mist/sites/:siteId/devices-catalog` - Full site device list from Mist `GET /sites/{id}/devices` (paginated AP + switch, uncached)
+- `GET /api/v1/mist/sites/:siteId/devices-stats/stream` - SSE stream of live device stats (Mist WebSocket backend)
 - `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail (same **5min** merged-devices cache)
 - `GET /api/v1/mist/inventory` - Org inventory (cached 15min)
 - `GET /api/v1/mist/sites/:siteId/client-stats` - Client stats (cached 2min)

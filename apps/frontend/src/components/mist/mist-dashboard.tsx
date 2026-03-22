@@ -2,8 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { MistDeviceSummary, MistSiteSummary } from "@/types/mist";
+import type {
+  MistDeviceDetail,
+  MistDeviceStatus,
+  MistDeviceSummary,
+  MistDeviceType,
+  MistSiteSummary,
+} from "@/types/mist";
 import { Button } from "@repo/ui/components/button";
+import { Badge } from "@repo/ui/components/badge";
 import {
   Select,
   SelectContent,
@@ -13,10 +20,11 @@ import {
 } from "@repo/ui/components/select";
 import { Pagination } from "@repo/ui/shared/pagination";
 import { cn } from "@repo/ui/lib/utils";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { Activity, ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { MistDevicesTable } from "./mist-devices-table";
 import { MistMetricCards } from "./mist-metric-cards";
+import { useMistDeviceStatsStream } from "@/hooks/use-mist-device-stats-stream";
 
 const ITEMS_PER_PAGE = 10;
 
@@ -24,11 +32,42 @@ type MistDashboardProps = {
   siteId: string;
 };
 
+const effectiveDeviceType = (d: MistDeviceSummary, merged: Map<string, MistDeviceDetail>): MistDeviceType => {
+  const m = merged.get(d.id);
+  if (d.type !== "unknown") {
+    return d.type;
+  }
+  if (m?.type && m.type !== "unknown") {
+    return m.type;
+  }
+  return d.type;
+};
+
+const effectiveDeviceStatus = (d: MistDeviceSummary, merged: Map<string, MistDeviceDetail>): MistDeviceStatus => {
+  const m = merged.get(d.id);
+  if (m?.status && m.status !== "unknown") {
+    return m.status;
+  }
+  return d.status;
+};
+
+const streamBadgeLabel = (status: string): string => {
+  if (status === "connected") return "Live stats on";
+  if (status === "reconnecting") return "Live stats connecting…";
+  if (status === "error") return "Live stats unavailable";
+  if (status === "disconnected") return "Live stats off";
+  return "Live stats…";
+};
+
 const MistDashboard = ({ siteId }: MistDashboardProps) => {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [liveStreamOn, setLiveStreamOn] = useState(false);
+  const { liveByMac, streamStatus } = useMistDeviceStatsStream(siteId, liveStreamOn);
+
   const [summary, setSummary] = useState<MistSiteSummary | null>(null);
-  const [devices, setDevices] = useState<MistDeviceSummary[]>([]);
+  const [catalogDevices, setCatalogDevices] = useState<MistDeviceSummary[]>([]);
+  const [mergedDevices, setMergedDevices] = useState<MistDeviceDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,44 +96,66 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     setLoading(true);
     setError(null);
     try {
-      const qs = new URLSearchParams();
-      if (typeFilter) qs.set("type", typeFilter);
-      if (statusFilter) qs.set("status", statusFilter);
-
-      const [sumRes, devRes] = await Promise.all([
+      const [sumRes, catRes, mergedRes] = await Promise.all([
         fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/site-summary`, { cache: "no-store" }),
-        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices?${qs}`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices-catalog`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices`, { cache: "no-store" }),
       ]);
 
       const sumJson = (await sumRes.json()) as { ok?: boolean; data?: MistSiteSummary; error?: string };
-      const devParsed = (await devRes.json()) as { ok?: boolean; data?: MistDeviceSummary[]; error?: string };
+      const catJson = (await catRes.json()) as { ok?: boolean; data?: MistDeviceSummary[]; error?: string };
+      const mergedJson = (await mergedRes.json()) as { ok?: boolean; data?: MistDeviceDetail[]; error?: string };
 
       if (!sumRes.ok || !sumJson.ok) {
         throw new Error(sumJson.error || "Failed to load site summary");
       }
-      if (!devRes.ok || !devParsed.ok) {
-        throw new Error(devParsed.error || "Failed to load devices");
+      if (!catRes.ok || !catJson.ok) {
+        throw new Error(catJson.error || "Failed to load devices catalog");
+      }
+      if (!mergedRes.ok || !mergedJson.ok) {
+        throw new Error(mergedJson.error || "Failed to load merged devices");
       }
 
       setSummary(sumJson.data ?? null);
-      setDevices(devParsed.data ?? []);
+      setCatalogDevices(catJson.data ?? []);
+      setMergedDevices(mergedJson.data ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unexpected error");
     } finally {
       setLoading(false);
     }
-  }, [siteId, statusFilter, typeFilter]);
+  }, [siteId]);
 
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
 
-  const totalPages = Math.max(1, Math.ceil(devices.length / ITEMS_PER_PAGE));
+  const mergedById = useMemo(() => {
+    const m = new Map<string, MistDeviceDetail>();
+    for (const d of mergedDevices) {
+      m.set(d.id, d);
+    }
+    return m;
+  }, [mergedDevices]);
+
+  const filteredDevices = useMemo(() => {
+    return catalogDevices.filter((d) => {
+      if (typeFilter && effectiveDeviceType(d, mergedById) !== typeFilter) {
+        return false;
+      }
+      if (statusFilter && effectiveDeviceStatus(d, mergedById) !== statusFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [catalogDevices, typeFilter, statusFilter, mergedById]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredDevices.length / ITEMS_PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const pageSlice = useMemo(() => {
     const start = (safePage - 1) * ITEMS_PER_PAGE;
-    return devices.slice(start, start + ITEMS_PER_PAGE);
-  }, [devices, safePage]);
+    return filteredDevices.slice(start, start + ITEMS_PER_PAGE);
+  }, [filteredDevices, safePage]);
 
   const existingParams = useMemo(() => {
     const o: Record<string, string> = {};
@@ -117,11 +178,35 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Site devices</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Mist AP and switch health for this site — select a row to open the device view.
+          The table loads from Mist <code className="text-xs">GET /api/v1/sites/…/devices</code> (paginated AP + switch) and
+          merged REST for fallback fields.           Use <strong>Stream live stats</strong> above the summary cards for an optional SSE feed that updates live table
+          columns only — it does not load the device list.
         </p>
       </div>
 
-      <MistMetricCards summary={summary} loading={loading} />
+      <MistMetricCards
+        summary={summary}
+        loading={loading}
+        liveStatsActions={
+          <>
+            <Button
+              type="button"
+              variant={liveStreamOn ? "default" : "outline"}
+              size="sm"
+              onClick={() => setLiveStreamOn((v) => !v)}
+              aria-pressed={liveStreamOn}
+            >
+              <Activity className={cn("mr-2 h-4 w-4", liveStreamOn && "text-primary-foreground")} aria-hidden />
+              {liveStreamOn ? "Stop live stats" : "Stream live stats"}
+            </Button>
+            {liveStreamOn ? (
+              <Badge variant={streamStatus === "connected" ? "secondary" : "outline"} className="text-xs font-normal">
+                {streamBadgeLabel(streamStatus)}
+              </Badge>
+            ) : null}
+          </>
+        }
+      />
 
       {error ? (
         <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -168,13 +253,20 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
         </Button>
       </div>
 
-      <MistDevicesTable siteId={siteId} devices={pageSlice} devicesLoading={loading} />
+      <MistDevicesTable
+        siteId={siteId}
+        devices={pageSlice}
+        devicesLoading={loading}
+        mergedById={mergedById}
+        liveByMac={liveStreamOn ? liveByMac : new Map()}
+        streamStatus={liveStreamOn ? streamStatus : "idle"}
+      />
 
-      {devices.length > 0 ? (
+      {filteredDevices.length > 0 ? (
         <Pagination
           currentPage={safePage}
           totalPages={totalPages}
-          total={devices.length}
+          total={filteredDevices.length}
           paramName="page"
           baseUrl={basePath}
           existingParams={existingParams}

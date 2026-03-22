@@ -1,9 +1,11 @@
 import type { Request, Response } from "express";
+import { mistDeviceStatsStreamHub } from "../lib/mist/mist-device-stats-stream.js";
 import {
   getDeviceDetail,
   getDeviceList,
   getOrgSites,
   getSiteSummary,
+  getSiteDevicesCatalog,
   mistService,
   type DeviceStatusFilter,
   type DeviceTypeFilter,
@@ -62,6 +64,40 @@ const getDeviceListController = async (req: Request, res: Response): Promise<voi
     const message = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ ok: false, error: message });
   }
+};
+
+const getSiteDevicesCatalogController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const siteId = String(req.params.siteId ?? "").trim();
+    if (!siteId) {
+      res.status(400).json({ ok: false, error: "Missing site id" });
+      return;
+    }
+    const devices = await getSiteDevicesCatalog(siteId);
+    res.status(200).json({ ok: true, data: devices });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    res.status(500).json({ ok: false, error: message });
+  }
+};
+
+const streamSiteDeviceStatsController = (req: Request, res: Response): void => {
+  const siteId = String(req.params.siteId ?? "").trim();
+  if (!siteId) {
+    res.status(400).json({ ok: false, error: "Missing site id" });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Access-Control-Allow-Origin": "*",
+  });
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+  mistDeviceStatsStreamHub.addSubscriber(siteId, res);
 };
 
 const getDeviceDetailController = async (req: Request, res: Response): Promise<void> => {
@@ -141,6 +177,8 @@ export {
   getSiteSummaryController,
   getDeviceListController,
   getDeviceDetailController,
+  getSiteDevicesCatalogController,
+  streamSiteDeviceStatsController,
   getOrgInventoryController,
   getSiteClientStatsController,
 };

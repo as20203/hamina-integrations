@@ -1,6 +1,7 @@
 import { Queue, Worker, Job, type ConnectionOptions } from "bullmq";
 import { redis } from "../cache/redis-client.js";
 import { sseManager } from "../sse/sse-manager.js";
+import { reserveMistRateBudget } from "./mist-rate-budget.js";
 import { v4 as uuidv4 } from "uuid";
 import type { QueueJobData, QueueJobResult, SSEMessage } from "@repo/types";
 
@@ -18,6 +19,31 @@ const queueConfig = {
       delay: 2000,
     },
   },
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const parseEnvInt = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined || raw === "") {
+    return fallback;
+  }
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+const waitForSharedMistBudget = async (): Promise<void> => {
+  const maxRequestsPerMinute = parseEnvInt(process.env.MIST_MAX_REQUESTS_PER_MINUTE, 300);
+  const maxRequestsPerHour = parseEnvInt(process.env.MIST_MAX_REQUESTS_PER_HOUR, 5000);
+  for (;;) {
+    const reservation = await reserveMistRateBudget({ maxRequestsPerMinute, maxRequestsPerHour });
+    if (reservation.allowed) {
+      return;
+    }
+    await sleep(Math.max(250, reservation.retryAfterMs));
+  }
 };
 
 const withOptionalJobId = (
@@ -63,6 +89,7 @@ export const mistWorker = new Worker(
       if (body !== undefined && body !== null) {
         init.body = JSON.stringify(body);
       }
+      await waitForSharedMistBudget();
       const response = await fetch(endpoint, init);
 
       const data: unknown = await response.json();

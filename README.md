@@ -26,7 +26,7 @@ npm install
 
 | Mode                                        | What                                                                 | Commands                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Dev (Docker, recommended)**               | Hot reload, full stack (Postgres, Redis, migrate, backend, frontend) | `docker compose --profile hamina up --build -d` → UI [http://localhost:3000](http://localhost:3000)                                                                                                                                                                                         |
+| **Dev (Docker, recommended)**               | Hot reload, full stack (Postgres, Redis, migrate, backend, frontend) | `docker compose --profile hamina up --build -d` → UI [http://localhost:3000](http://localhost:3000) or `npm run docker:dev`                                                                                                                                                                 |
 | **Dev (host)**                              | Turbo / per-app `npm run dev`                                        | Requires DB, Redis, and backend reachable; see [Advanced: DB + Redis only on Docker](#advanced-db--redis-only-on-docker) and [Environment variables](#environment-variables).                                                                                                               |
 | **Production build (Docker)**               | Compiled images (`hamina-build` profile)                             | `npm run docker:build` (same as `docker compose --profile hamina-build up --build -d`) → UI [http://localhost:3100](http://localhost:3100)                                                                                                                                                  |
 | **Production build (local artifacts only)** | Compile without Compose                                              | Root `npm run build` (Turbo builds [`apps/frontend`](apps/frontend/package.json) and [`apps/backend`](apps/backend/package.json)); then `npm run start:frontend` / `npm run start:backend` with env. Postgres and Redis are still typically provided via Docker—see Compose profiles above. |
@@ -88,83 +88,49 @@ Then point **`DATABASE_URL`** / **`DIRECT_DATABASE_URL`** at `localhost:3762`, *
 
 ### End-to-end request path
 
-The browser loads Next.js App Router pages: [`/sites`](<apps/frontend/src/app/(main)/sites/page.tsx>), [`/site/[siteId]`](<apps/frontend/src/app/(main)/site/[siteId]/page.tsx>), and [`/site/[siteId]/devices/[deviceId]`](<apps/frontend/src/app/(main)/site/[siteId]/devices/[deviceId]/page.tsx>).
+You open pages such as:
 
-**BFF (Next.js server):** Route handlers under [`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/) proxy to Express using [`getBackendInternalBaseUrl()`](apps/frontend/src/lib/backend-internal-url.ts). In Docker, set **`BACKEND_INTERNAL_URL`** (e.g. `http://backend:4000`) so the BFF reaches the API on the Compose network.
+- [`/sites`](<apps/frontend/src/app/(main)/sites/page.tsx>)
+- [`/site/[siteId]`](<apps/frontend/src/app/(main)/site/[siteId]/page.tsx>)
+- [`/site/[siteId]/devices/[deviceId]`](<apps/frontend/src/app/(main)/site/[siteId]/devices/[deviceId]/page.tsx>)
 
-**Express API:** [`apps/backend/src/routes/mist.routes.ts`](apps/backend/src/routes/mist.routes.ts) (and related controllers/services) exposes `/api/v1/mist/...`, calls **Juniper Mist**, and uses **Redis** (cache plus BullMQ), **Postgres** (Prisma via [`@repo/db`](packages/database)), and **SSE** for queue updates where applicable.
+**BFF means Backend for Frontend.**  
+In this project, the BFF is the Next.js server routes under [`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/).
 
-See also: [Docker services](#docker-services), [Environment variables](#environment-variables), and [API Endpoints](#api-endpoints) (BFF vs Express paths).
+Simple path:
 
-```mermaid
-flowchart LR
-  subgraph client [Browser]
-    UI[Next_pages]
-  end
-  subgraph next [Next_js_server]
-    BFF["/api/mist/*"]
-  end
-  subgraph express [Express_backend]
-    API["/api/v1/mist/*"]
-    Queue[BullMQ_workers]
-    SSE[SSE_manager]
-  end
-  subgraph data [Infrastructure]
-    Mist[Juniper_Mist_API]
-    Redis[(Redis)]
-    PG[(Postgres)]
-  end
-  UI --> BFF
-  BFF --> API
-  API --> Mist
-  API --> Redis
-  API --> PG
-  Queue --> Redis
-  SSE --> client
-```
+- Browser calls `/api/mist/...` on Next.js.
+- Next.js forwards to Express `/api/v1/mist/...`.
+- Express calls Mist, Redis, and Postgres as needed.
+- Response goes back through Next.js to the browser.
+
+In Docker, set `BACKEND_INTERNAL_URL` (for example `http://backend:4000`) so Next.js can reach Express.
 
 ### Mist request lifecycle (cache, rate limit, BullMQ, SSE)
 
-Traffic is **browser →** Next BFF ([`apps/frontend/src/app/api/mist/`](apps/frontend/src/app/api/mist/)) **→** Express ([`mist.routes.ts`](apps/backend/src/routes/mist.routes.ts)) **→** [`mist.service.ts`](apps/backend/src/services/mist.service.ts). **Cached JSON reads** use [`cache.getOrSet`](apps/backend/src/lib/cache/redis-cache.ts) (Redis + in-memory fallback). On a miss, loaders call [`mistFetch` / `mistFetchWithMeta`](apps/backend/src/lib/mist/client.ts), each gated by [`runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) (per-minute, per-hour, concurrency). **Queue + SSE** ([`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts), [`sse-manager`](apps/backend/src/lib/sse/sse-manager.ts)) applies to browser flows that use [`executeRequest`](apps/backend/src/lib/mist/rate-limiter.ts) / `isQueued` — see the sequence diagram below. **Per-endpoint cache keys and TTLs** are in the [next subsection](#mist-data-endpoints-redis-keys-ttl-and-read-flow).
+Short version:
+
+- Express receives the request.
+- Service code checks Redis cache first.
+- If cache hit: return fast.
+- If cache miss: call Mist API, normalize result, save to cache, return response.
+
+Queue + SSE only apply on endpoints that return `isQueued`:
+
+- API can return `{ isQueued, requestId, jobId }`.
+- Browser listens on SSE (`/api/mist/events/{clientId}`).
+- Worker sends progress (`queue-started`, `queue-complete`, `queue-error`).
+
+Common reasons for errors:
+
+- Next.js cannot reach Express (`BACKEND_INTERNAL_URL` wrong or backend not running).
+- Mist API timeout or 429 rate limit.
+- Redis unavailable.
+- Queued request still in progress when UI expects immediate data.
 
 ### Mist data endpoints: Redis keys, TTL, and read flow
 
 All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey}`** from [`CACHE_CONFIGS`](apps/backend/src/lib/cache/redis-cache.ts). If Redis errors or is down, [`RedisCache`](apps/backend/src/lib/cache/redis-cache.ts) falls back to an in-process map for **`CACHE_FALLBACK_TTL_MINUTES`** (default 10 min).
-
-**Cached read flow** (typical `GET` that uses `getOrSet`):
-
-```mermaid
-flowchart TD
-  BR[Browser]
-  BFF["Next.js BFF /api/mist/*"]
-  EX["Express /api/v1/mist/*"]
-  CTRL[Controller]
-  SVC[mist.service]
-  GOS["cache.getOrSet"]
-  RGET["Redis GET + in-memory fallback read"]
-  RW["mistRateLimiter.runWhenAllowed"]
-  MF["mistFetch / mistFetchWithMeta"]
-  MIST[Juniper_Mist_API]
-  RSET["Redis SETEX + fallback map write"]
-  OUT[JSON_to_client]
-
-  BR --> BFF
-  BFF --> EX
-  EX --> CTRL
-  CTRL --> SVC
-  SVC --> GOS
-  GOS --> RGET
-  RGET -->|hit| OUT
-  OUT --> CTRL
-  RGET -->|miss| RW
-  RW --> MF
-  MF --> MIST
-  MIST --> MF
-  MF --> RW
-  RW --> GOS
-  GOS --> RSET
-  RSET --> OUT
-```
 
 **Endpoint reference** (Express path; BFF mirrors under `/api/mist/...` — see [API Endpoints](#api-endpoints)).
 
@@ -188,59 +154,23 @@ flowchart TD
 | `GET /api/v1/mist/sites/:siteId/devices-stats/stream` | **SSE** proxy of Mist **WebSocket** `/api-ws/v1/stream` subscribed to `/sites/{siteId}/stats/devices` ([`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts)). |
 | `GET /api/v1/mist/queue/status`                       | Live **BullMQ** + SSE stats (reads queue state in Redis, not a Mist payload cache).                                                                                                             |
 
-**Throttling (all `mistFetch` / `mistFetchWithMeta` loaders)** — Before each Mist HTTPS request, [`runWhenAllowed`](apps/backend/src/lib/mist/rate-limiter.ts) waits until there is capacity under rolling **per-minute** (`MIST_MAX_REQUESTS_PER_MINUTE`, default **300**), **per-hour** (`MIST_MAX_REQUESTS_PER_HOUR`, default **5000**), and **10** concurrent calls. Retries after 429/5xx count as separate attempts. Env vars: [Environment variables](#environment-variables).
+**Rate limit in plain English:**
 
-**BullMQ worker** jobs use raw `fetch` in [`mist-queue.ts`](apps/backend/src/lib/mist/mist-queue.ts) (not `mistFetch`); they do **not** consume `runWhenAllowed` slots.
+- We do not trust Mist to tell us remaining quota in headers.
+- We track usage ourselves in Redis.
+- We keep two counters:
+  - minute counter
+  - hour counter (resets at top of hour)
+- We also limit concurrent calls in each backend process.
+- Direct requests and queued worker requests both use the same Redis budget logic.
 
 **Reserved `CACHE_CONFIGS` (not used by `mist.service` today):** `mist:clients:summary`, `mist:device`, `mist:site:summary` — present in [`redis-cache.ts`](apps/backend/src/lib/cache/redis-cache.ts) for future use.
 
-**Queue + SSE flow** — Read this top to bottom. **Rectangles** are systems or outcomes; **diamonds** are decisions. For most Mist **read** endpoints, a cache miss uses **`runWhenAllowed`** then **`mistFetch`** to Juniper Mist (not the browser queue path). The **background queue** branch applies when the API responds with **`isQueued`** and a **`requestId`**, and the browser already has an **EventSource** on **`/api/mist/events/{clientId}`**.
+Queue flow in plain English:
 
-```mermaid
-flowchart TD
-  subgraph client_side["Client side (user device)"]
-    Browser["Web browser"]
-    NextBFF["Next.js Backend-for-Frontend\nSame-origin routes under /api/mist/…\nServer forwards to Express using BACKEND_INTERNAL_URL"]
-  end
-
-  subgraph server_side["Our backend (Express + Redis + workers)"]
-    ExpressMist["Express Mist API\nRoutes under /api/v1/mist/…"]
-    CacheRead{"Is there a cached JSON result\nfor this request in Redis?\n(Service layer uses getOrSet.)"}
-    ResponseOk["HTTP 200 — return JSON body\nto the Next.js server"]
-    LimitChoice{"Rate limiter choice\nRun the Mist call now,\nor put work on the background queue?"}
-    MistLive["Juniper Mist — live HTTPS call\nApplication uses mistFetch after runWhenAllowed"]
-    CacheWrite["Store JSON in Redis with a time-to-live\nand update in-memory fallback if Redis fails"]
-    JobQueue["BullMQ mist-api queue\nJob data lives in Redis"]
-    ResponseQueued["HTTP 200 — JSON tells the UI\nthe work is queued (isQueued, requestId)"]
-    BackgroundWorker["BullMQ worker process\nRuns jobs one after another"]
-    MistWorker["Juniper Mist — HTTPS call\nfrom the worker (plain fetch, not mistFetch)"]
-    Events["Server-Sent Events manager\nSends queue-started, queue-complete, queue-error"]
-  end
-
-  Browser -->|"Step 1 — User or app calls GET /api/mist/…\nOptional header X-Client-ID for queue correlation"| NextBFF
-  NextBFF -->|"Step 2 — Next.js server proxies to internal Express URL"| ExpressMist
-  ExpressMist -->|"Step 3 — Controller asks the service; service reads cache"| CacheRead
-
-  CacheRead -->|"Yes — cache hit"| ResponseOk
-  ResponseOk -->|"Step 4 — Next.js returns the same JSON to the browser"| NextBFF
-  NextBFF -->|"Step 5 — Browser renders or continues"| Browser
-
-  CacheRead -->|"No — cache miss"| LimitChoice
-  LimitChoice -->|"Run now — under per-minute, per-hour,\nand concurrency limits"| MistLive
-  MistLive -->|"Mist returns data"| CacheWrite
-  CacheWrite -->|"Step 4 — Same success path as a cache hit"| ResponseOk
-
-  LimitChoice -->|"Defer — local limits full or Mist sent 429\nWork is enqueued for later"| JobQueue
-  JobQueue -->|"Immediate response while work waits in queue"| ResponseQueued
-  ResponseQueued --> NextBFF
-  NextBFF --> Browser
-
-  JobQueue -->|"Worker claims the job"| BackgroundWorker
-  BackgroundWorker -->|"Outbound request to Mist"| MistWorker
-  MistWorker -->|"Response body for the job"| BackgroundWorker
-  BackgroundWorker -->|"Push events to the right browser session"| Events
-  Events -->|"Open channel — browser uses EventSource on\nGET /api/mist/events/ plus that session client id"| Browser
-```
+- Request is accepted but marked as queued.
+- Worker runs it later when rate-limit budget is available.
+- Browser receives updates over SSE.
 
 ### Frontend (Next.js App Router)
 
@@ -726,21 +656,21 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 
 **What we already have (integration points):**
 
-| Source | Use in 3D |
-|--------|-----------|
-| Merged site devices (`GET /api/mist/sites/{siteId}/devices`, [`buildMergedDevices`](apps/backend/src/services/mist.service.ts)) | Device list, type (`ap` / `switch`), `id`, name, `status`. |
-| Device raw fields `x_m`, `y_m`, `height`, `map_id` | Indoor placement in meters (same as [`device-floor-placement.tsx`](apps/frontend/src/components/mist/device-floor-placement.tsx)); devices without coordinates need a **fallback layout** (grid, circle pack, or stacked by floor). |
-| Site org metadata (`latlng` on sites) | Optional **geo backdrop** or orientation only; indoor `x_m`/`y_m` remain primary for campus maps. |
-| Live stats SSE (beta) | Future: tint meshes or halos by **live** reachability / client load (see live stream hub). |
+| Source                                                                                                                          | Use in 3D                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Merged site devices (`GET /api/mist/sites/{siteId}/devices`, [`buildMergedDevices`](apps/backend/src/services/mist.service.ts)) | Device list, type (`ap` / `switch`), `id`, name, `status`.                                                                                                                                                                          |
+| Device raw fields `x_m`, `y_m`, `height`, `map_id`                                                                              | Indoor placement in meters (same as [`device-floor-placement.tsx`](apps/frontend/src/components/mist/device-floor-placement.tsx)); devices without coordinates need a **fallback layout** (grid, circle pack, or stacked by floor). |
+| Site org metadata (`latlng` on sites)                                                                                           | Optional **geo backdrop** or orientation only; indoor `x_m`/`y_m` remain primary for campus maps.                                                                                                                                   |
+| Live stats SSE (beta)                                                                                                           | Future: tint meshes or halos by **live** reachability / client load (see live stream hub).                                                                                                                                          |
 
 **Recommended stack (frontend):**
 
-| Option | Role | Pros | Cons |
-|--------|------|------|------|
-| **React Three Fiber (R3F)** + **three** + **@react-three/drei** | Default choice | Declarative React tree for scenes; `OrbitControls`, `PerspectiveCamera`, `Html` labels, `Instances` for many APs; huge ecosystem; fits Next.js App Router with dynamic `ssr: false` for the canvas. | WebGL only; bundle size; need resize + loading boundaries. |
-| **Three.js** (imperative, no R3F) | Alternative | Full control, no extra abstraction. | More boilerplate; harder to keep in sync with React state. |
-| **Babylon.js** (+ `@babylonjs/react` if used) | Alternative | Strong tooling, exporters, XR later. | Heavier runtime; less common in this repo’s stack today. |
-| **deck.gl** | Geo-centric sites only | Excellent **lat/lng** layers, large point clouds. | Weak fit for **indoor meter** (`x_m`/`y_m`) unless you build a custom coordinate system; better as a **second view** for outdoor-only assets. |
+| Option                                                          | Role                   | Pros                                                                                                                                                                                                | Cons                                                                                                                                          |
+| --------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| **React Three Fiber (R3F)** + **three** + **@react-three/drei** | Default choice         | Declarative React tree for scenes; `OrbitControls`, `PerspectiveCamera`, `Html` labels, `Instances` for many APs; huge ecosystem; fits Next.js App Router with dynamic `ssr: false` for the canvas. | WebGL only; bundle size; need resize + loading boundaries.                                                                                    |
+| **Three.js** (imperative, no R3F)                               | Alternative            | Full control, no extra abstraction.                                                                                                                                                                 | More boilerplate; harder to keep in sync with React state.                                                                                    |
+| **Babylon.js** (+ `@babylonjs/react` if used)                   | Alternative            | Strong tooling, exporters, XR later.                                                                                                                                                                | Heavier runtime; less common in this repo’s stack today.                                                                                      |
+| **deck.gl**                                                     | Geo-centric sites only | Excellent **lat/lng** layers, large point clouds.                                                                                                                                                   | Weak fit for **indoor meter** (`x_m`/`y_m`) unless you build a custom coordinate system; better as a **second view** for outdoor-only assets. |
 
 **Suggested architecture:**
 
@@ -755,11 +685,11 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 
 **Phased delivery:**
 
-| Phase | Scope |
-|-------|--------|
+| Phase   | Scope                                                                                                                                                                                           |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MVP** | R3F scene: grid floor, spheres/boxes for AP (e.g. cone) vs switch (box), labels from `Html`, navigation to device detail; devices without `x_m`/`y_m` in a side panel list or auto-ring layout. |
-| **V2** | Floor image + calibration; multi-floor selector; table ↔ 3D selection sync. |
-| **V3** | Live SSE coloring; client density heat (if per-AP counts available without overloading Mist). |
+| **V2**  | Floor image + calibration; multi-floor selector; table ↔ 3D selection sync.                                                                                                                     |
+| **V3**  | Live SSE coloring; client density heat (if per-AP counts available without overloading Mist).                                                                                                   |
 
 **Risks:** Mist coordinate coverage is **sparse** on some sites; map APIs and licensing; WebGL blocked on some corporate browsers — keep a **non-WebGL fallback** (current 2D schematic or table-only).
 

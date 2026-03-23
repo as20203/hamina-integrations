@@ -1,8 +1,7 @@
 import { queueMistRequest } from './mist-queue.js';
+import { reserveMistRateBudget } from './mist-rate-budget.js';
 import type {
   RateLimitConfig,
-  QueuedResponse,
-  ImmediateResponse,
   RateLimitedResponse,
 } from "@repo/types";
 
@@ -21,7 +20,7 @@ const parseEnvInt = (raw: string | undefined, fallback: number): number => {
 
 class MistRateLimiter {
   private requestTimes: number[] = [];
-  private requestTimesHour: number[] = [];
+  private requestTimesFixedHour: number[] = [];
   private activeRequests = 0;
   private config: RateLimitConfig;
 
@@ -40,20 +39,21 @@ class MistRateLimiter {
     this.requestTimes = this.requestTimes.filter((time) => time > oneMinuteAgo);
   }
 
-  private cleanupHourlyRequests(): void {
-    const hourAgo = Date.now() - 3600000;
-    this.requestTimesHour = this.requestTimesHour.filter((t) => t > hourAgo);
+  private cleanupFixedHourRequests(): void {
+    const now = Date.now();
+    const startOfHour = now - (now % 3_600_000);
+    this.requestTimesFixedHour = this.requestTimesFixedHour.filter((t) => t >= startOfHour);
   }
 
-  private isRateLimited(): boolean {
+  private inMemoryIsRateLimited(): boolean {
     this.cleanupOldRequests();
-    this.cleanupHourlyRequests();
+    this.cleanupFixedHourRequests();
 
     if (this.requestTimes.length >= this.config.maxRequestsPerMinute) {
       return true;
     }
 
-    if (this.requestTimesHour.length >= this.config.maxRequestsPerHour) {
+    if (this.requestTimesFixedHour.length >= this.config.maxRequestsPerHour) {
       return true;
     }
 
@@ -64,6 +64,21 @@ class MistRateLimiter {
     return false;
   }
 
+  private async reserveSharedBudget(): Promise<{ ok: true } | { ok: false; retryAfterMs: number }> {
+    const reserved = await reserveMistRateBudget({
+      maxRequestsPerMinute: this.config.maxRequestsPerMinute,
+      maxRequestsPerHour: this.config.maxRequestsPerHour,
+    });
+    if (!reserved.allowed) {
+      return { ok: false, retryAfterMs: reserved.retryAfterMs };
+    }
+    // Keep local stats for /queue/status style visibility.
+    const now = Date.now();
+    this.requestTimes.push(now);
+    this.requestTimesFixedHour.push(now);
+    return { ok: true };
+  }
+
   /**
    * Server-side Mist calls (mistFetch): wait for budget, then run without BullMQ/SSE.
    * Each successful wait consumes one minute + one hour slot and a concurrency slot for the duration of fetcher.
@@ -71,27 +86,18 @@ class MistRateLimiter {
   async runWhenAllowed<T>(fetcher: () => Promise<T>): Promise<T> {
     for (;;) {
       this.cleanupOldRequests();
-      this.cleanupHourlyRequests();
+      this.cleanupFixedHourRequests();
 
       if (this.activeRequests >= this.config.maxConcurrentRequests) {
         await sleep(this.config.retryAfterMs);
         continue;
       }
-
-      if (this.requestTimes.length >= this.config.maxRequestsPerMinute) {
-        await sleep(this.config.retryAfterMs);
+      const reserved = await this.reserveSharedBudget();
+      if (!reserved.ok) {
+        await sleep(Math.max(this.config.retryAfterMs, reserved.retryAfterMs));
         continue;
       }
-
-      if (this.requestTimesHour.length >= this.config.maxRequestsPerHour) {
-        await sleep(this.config.retryAfterMs);
-        continue;
-      }
-
-      const now = Date.now();
       this.activeRequests += 1;
-      this.requestTimes.push(now);
-      this.requestTimesHour.push(now);
       try {
         return await fetcher();
       } finally {
@@ -110,7 +116,7 @@ class MistRateLimiter {
       body?: unknown;
     }
   ): Promise<RateLimitedResponse<T>> {
-    if (this.isRateLimited()) {
+    if (this.activeRequests >= this.config.maxConcurrentRequests || this.inMemoryIsRateLimited()) {
       // Queue the request
       console.log(`[rate-limiter] Rate limit hit, queueing request to ${options.endpoint}`);
       const { requestId, jobId } = await queueMistRequest(options.endpoint, options);
@@ -124,10 +130,16 @@ class MistRateLimiter {
 
     // Execute immediately
     try {
+      const reserved = await this.reserveSharedBudget();
+      if (!reserved.ok) {
+        const { requestId, jobId } = await queueMistRequest(options.endpoint, options);
+        return {
+          isQueued: true,
+          requestId,
+          jobId,
+        };
+      }
       this.activeRequests++;
-      const now = Date.now();
-      this.requestTimes.push(now);
-      this.requestTimesHour.push(now);
 
       const data = await fetcher();
       
@@ -156,10 +168,10 @@ class MistRateLimiter {
 
   getStats() {
     this.cleanupOldRequests();
-    this.cleanupHourlyRequests();
+    this.cleanupFixedHourRequests();
     return {
       requestsInLastMinute: this.requestTimes.length,
-      requestsInLastHour: this.requestTimesHour.length,
+      requestsInCurrentHourWindow: this.requestTimesFixedHour.length,
       activeRequests: this.activeRequests,
       maxRequestsPerMinute: this.config.maxRequestsPerMinute,
       maxRequestsPerHour: this.config.maxRequestsPerHour,

@@ -48,7 +48,7 @@ class SSEManager {
     if (client) {
       try {
         client.response.end();
-      } catch (error) {
+      } catch {
         // Connection might already be closed
       }
       this.clients.delete(clientId);
@@ -75,7 +75,7 @@ class SSEManager {
 
   broadcast(message: SSEMessage): void {
     const deadClients: string[] = [];
-    
+
     for (const [clientId, client] of this.clients) {
       try {
         const data = JSON.stringify(message);
@@ -99,12 +99,12 @@ class SSEManager {
       try {
         // Send ping
         client.response.write(`data: ${JSON.stringify({ type: 'ping', timestamp: now })}\n\n`);
-        
+
         // Check if client is stale (no activity for 2 minutes)
         if (now - client.lastPing > 120000) {
           deadClients.push(clientId);
         }
-      } catch (error) {
+      } catch {
         deadClients.push(clientId);
       }
     }
@@ -124,7 +124,7 @@ class SSEManager {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
     }
-    
+
     // Close all client connections
     for (const clientId of this.clients.keys()) {
       this.removeClient(clientId);

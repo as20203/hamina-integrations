@@ -1,6 +1,6 @@
 import { redis } from './redis-client.js';
 import { CACHE_FALLBACK_TTL, REDIS_HEALTH_CHECK_INTERVAL } from './cache-config.js';
-import type { CacheConfig, FallbackCacheItem, CacheStats } from '@repo/types';
+import type { CacheConfig, FallbackCacheItem } from '@repo/types';
 
 export const CACHE_CONFIGS = {
   ORG_SITES: { ttl: 300, keyPrefix: 'mist:org:sites', fallbackTtl: CACHE_FALLBACK_TTL }, // 5 min / 10 min fallback
@@ -49,7 +49,7 @@ class RedisCache {
 
   async get<T>(key: string, config: CacheConfig): Promise<T | null> {
     const fullKey = `${config.keyPrefix}:${key}`;
-    
+
     // Try Redis first if available
     if (await this.checkRedisHealth()) {
       try {
@@ -102,7 +102,7 @@ class RedisCache {
 
   async del(key: string, config: CacheConfig): Promise<void> {
     const fullKey = `${config.keyPrefix}:${key}`;
-    
+
     // Try Redis first
     if (await this.checkRedisHealth()) {
       try {
@@ -143,8 +143,8 @@ class RedisCache {
     config: CacheConfig,
     fetcher: () => Promise<T>
   ): Promise<T> {
-    let cached = await this.get<T>(key, config);
-    
+    const cached = await this.get<T>(key, config);
+
     if (cached !== null) {
       return cached;
     }

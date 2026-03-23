@@ -128,6 +128,9 @@ const getOrgInventoryController = async (req: Request, res: Response): Promise<v
     const siteId = req.query.siteId as string | undefined;
     const type = req.query.type as "ap" | "switch" | undefined;
     const connected = req.query.connected === 'true' ? true : req.query.connected === 'false' ? false : undefined;
+    const serial = typeof req.query.serial === "string" ? req.query.serial.trim() : undefined;
+    const model = typeof req.query.model === "string" ? req.query.model.trim() : undefined;
+    const mac = typeof req.query.mac === "string" ? req.query.mac.trim() : undefined;
     const limit = parsePositiveInt(req.query.limit, 50, 500);
     const page = parsePositiveInt(req.query.page, 1);
 
@@ -135,6 +138,9 @@ const getOrgInventoryController = async (req: Request, res: Response): Promise<v
       ...(siteId && { siteId }),
       ...(type && { type }),
       ...(connected !== undefined && { connected }),
+      ...(serial && { serial }),
+      ...(model && { model }),
+      ...(mac && { mac }),
       limit,
       page,
     });

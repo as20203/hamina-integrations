@@ -112,6 +112,9 @@ export interface InventoryFilters {
   siteId?: string;
   type?: MistDeviceType;
   connected?: boolean;
+  serial?: string;
+  model?: string;
+  mac?: string;
   limit?: number;
   page?: number;
 }

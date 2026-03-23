@@ -58,10 +58,26 @@ const DeviceDetailView = ({ device, siteId }: DeviceDetailViewProps) => {
     const loadInventoryDetails = async () => {
       setLoadingInventory(true);
       try {
-        const response = await queueService.request<ApiResponse<InventoryDevice[]>>(`/api/mist/inventory?siteId=${siteId}&limit=1000`);
+        const q = new URLSearchParams();
+        q.set("siteId", siteId);
+        q.set("limit", "100");
+        if (device.serial) {
+          q.set("serial", device.serial);
+        }
+        if (device.model) {
+          q.set("model", device.model);
+        }
+        if (device.mac) {
+          q.set("mac", device.mac);
+        }
+        const response = await queueService.request<ApiResponse<InventoryDevice[]>>(`/api/mist/inventory?${q.toString()}`);
         if (response.ok && Array.isArray(response.data)) {
           const devices = response.data;
-          const inventoryDevice = devices.find(d => d.id === device.id || d.mac === device.mac);
+          const inventoryDevice =
+            devices.find((d) => d.id === device.id) ||
+            devices.find((d) => d.serial && device.serial && d.serial === device.serial) ||
+            devices.find((d) => d.mac && device.mac && d.mac === device.mac) ||
+            devices[0];
           setInventoryDetails(inventoryDevice || null);
         }
       } catch (error) {

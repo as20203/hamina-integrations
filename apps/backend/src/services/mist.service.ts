@@ -472,6 +472,15 @@ const getOrgInventory = async (filters?: InventoryFilters): Promise<{ devices: I
       if (filters?.connected !== undefined) {
         query.connected = filters.connected ? "true" : "false";
       }
+      if (filters?.serial) {
+        query.serial = filters.serial;
+      }
+      if (filters?.model) {
+        query.model = filters.model;
+      }
+      if (filters?.mac) {
+        query.mac = filters.mac;
+      }
 
       const path = `/api/v1/orgs/${orgId}/inventory`;
       const { data, headers } = await mistFetchWithMeta<unknown>(path, query);

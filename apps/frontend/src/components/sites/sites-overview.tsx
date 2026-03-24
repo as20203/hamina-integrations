@@ -1,7 +1,8 @@
 "use client";
 
 import { SiteCard } from "@/components/sites/site-card";
-import type { EnhancedSiteInfo, InventoryDevice, InventorySummary, ClientSummary, ApiResponse } from "@/types/mist";
+import type { EnhancedSiteInfo, ApiResponse, MistSiteSummary } from "@/types/mist";
+import { mistSiteSummaryToInventoryCard } from "@/lib/mist/site-summary-for-card";
 import { Button } from "@repo/ui/components/button";
 import { Skeleton } from "@repo/ui/components/skeleton";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -81,47 +82,29 @@ const SitesOverview = () => {
     };
   }, []);
 
-  // Progressive loading of inventory and client data
+  // Progressive loading of site summary (stats-backed counts)
   const progressivelyLoadSiteData = useCallback(async (sitesToEnhance: EnhancedSiteInfo[]) => {
-    // Load inventory data for all sites in parallel
-    const inventoryPromises = sitesToEnhance.map(async (site) => {
+    const siteSummaryPromises = sitesToEnhance.map(async (site) => {
       try {
-        const response = await queueService.request<ApiResponse<InventoryDevice[]>>(`/api/mist/inventory?siteId=${site.id}&limit=1000`);
-        if (response.ok && Array.isArray(response.data)) {
-          const devices = response.data;
-          const summary: InventorySummary = {
-            total_devices: devices.length,
-            ap_count: devices.filter(d => d.type === 'ap').length,
-            switch_count: devices.filter(d => d.type === 'switch').length,
-            connected_devices: devices.filter(d => d.connected).length,
-          };
-          return { siteId: site.id, inventory_summary: summary };
-        }
-      } catch (error) {
-        console.warn(`Failed to load inventory for site ${site.id}:`, error);
-      }
-      return null;
-    });
-
-    // Load client stats for all sites in parallel
-    const clientPromises = sitesToEnhance.map(async (site) => {
-      try {
-        const response = await queueService.request<ApiResponse<{clients: Record<string, unknown>[], summary: ClientSummary}>>(`/api/mist/sites/${site.id}/client-stats?limit=1000`);
+        const response = await queueService.request<ApiResponse<MistSiteSummary>>(
+          `/api/mist/sites/${encodeURIComponent(site.id)}/site-summary`
+        );
         if (response.ok && response.data) {
-          const { summary } = response.data;
-          return { siteId: site.id, client_summary: summary };
+          return {
+            siteId: site.id,
+            inventory_summary: mistSiteSummaryToInventoryCard(response.data),
+          };
         }
       } catch (error) {
-        console.warn(`Failed to load client stats for site ${site.id}:`, error);
+        console.warn(`Failed to load site summary for site ${site.id}:`, error);
       }
       return null;
     });
 
     // Process results as they come in
-    const inventoryResults = await Promise.allSettled(inventoryPromises);
-    const clientResults = await Promise.allSettled(clientPromises);
+    const inventoryResults = await Promise.allSettled(siteSummaryPromises);
 
-    // Update sites with inventory data
+    // Update sites with device count summary
     inventoryResults.forEach((result) => {
       if (result.status === 'fulfilled' && result.value) {
         setSites(prevSites => 
@@ -134,18 +117,6 @@ const SitesOverview = () => {
       }
     });
 
-    // Update sites with client data
-    clientResults.forEach((result) => {
-      if (result.status === 'fulfilled' && result.value) {
-        setSites(prevSites => 
-          prevSites.map(site => 
-            site.id === result.value!.siteId 
-              ? { ...site, client_summary: result.value!.client_summary }
-              : site
-          )
-        );
-      }
-    });
   }, [queueService]);
 
   useEffect(() => {
@@ -160,7 +131,7 @@ const SitesOverview = () => {
           setSites(result.sites);
           setMeta(result.meta);
           
-          // Start progressive loading of inventory and client data
+          // Start progressive loading of site summary data
           progressivelyLoadSiteData(result.sites);
         }
       } catch (e) {

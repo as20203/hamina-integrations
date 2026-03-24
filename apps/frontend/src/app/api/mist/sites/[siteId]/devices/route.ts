@@ -6,12 +6,20 @@ export const GET = async (request: NextRequest, context: { params: Promise<{ sit
     const { siteId } = await context.params;
     const type = request.nextUrl.searchParams.get("type") || "";
     const status = request.nextUrl.searchParams.get("status") || "";
+    const page = request.nextUrl.searchParams.get("page") || "";
+    const limit = request.nextUrl.searchParams.get("limit") || "";
     const query = new URLSearchParams();
     if (type) {
       query.set("type", type);
     }
     if (status) {
       query.set("status", status);
+    }
+    if (page) {
+      query.set("page", page);
+    }
+    if (limit) {
+      query.set("limit", limit);
     }
     const suffix = query.toString() ? `?${query.toString()}` : "";
     const response = await fetch(

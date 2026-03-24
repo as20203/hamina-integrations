@@ -5,7 +5,8 @@ import type { CacheConfig, FallbackCacheItem } from '@repo/types';
 export const CACHE_CONFIGS = {
   ORG_SITES: { ttl: 300, keyPrefix: 'mist:org:sites', fallbackTtl: CACHE_FALLBACK_TTL }, // 5 min / 10 min fallback
   ORG_INVENTORY: { ttl: 900, keyPrefix: 'mist:inventory:org', fallbackTtl: CACHE_FALLBACK_TTL }, // 15 min / 10 min fallback
-  SITE_INVENTORY: { ttl: 300, keyPrefix: 'mist:merged:devices:v2', fallbackTtl: CACHE_FALLBACK_TTL }, // merged stats+devices (incl. paginated AP+switch) / 10 min fallback
+  SITE_INVENTORY: { ttl: 300, keyPrefix: 'mist:site:stats:snapshot', fallbackTtl: CACHE_FALLBACK_TTL }, // full-site stats/devices snapshot (detail, catalog, stream allowlist) / 5 min fallback
+  SITE_STATS_DEVICES: { ttl: 120, keyPrefix: 'mist:site:stats:devices', fallbackTtl: CACHE_FALLBACK_TTL }, // paginated GET …/stats/devices (table list)
   CLIENT_STATS: { ttl: 120, keyPrefix: 'mist:clients:site', fallbackTtl: CACHE_FALLBACK_TTL }, // 2 min / 10 min fallback
   CLIENT_SUMMARY: { ttl: 30, keyPrefix: 'mist:clients:summary', fallbackTtl: CACHE_FALLBACK_TTL }, // 30 sec / 10 min fallback
   DEVICE_DETAIL: { ttl: 300, keyPrefix: 'mist:device', fallbackTtl: CACHE_FALLBACK_TTL }, // 5 min / 10 min fallback

@@ -134,17 +134,19 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 
 **Endpoint reference** (Express path; BFF mirrors under `/api/mist/...` — see [API Endpoints](#api-endpoints)).
 
-| BFF (browser)                              | Express `GET`                                  | Service function        | `getOrSet`                                                                         | Redis `keyPrefix`                                   | Cache key shape                                             | TTL                          |
-| ------------------------------------------ | ---------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------- | ---------------------------- |
-| `/api/mist/sites`                          | `/api/v1/mist/sites`                           | `getOrgSites`           | Direct                                                                             | `mist:org:sites`                                    | `{orgId}:{page}:{limit}`                                    | **300 s** (5 min)            |
-| `/api/mist/sites/[siteId]/site-summary`    | `/api/v1/mist/sites/:siteId/site-summary`      | `getSiteSummary`        | Via `buildMergedDevices` + status totals from `/stats/devices?type=...&status=...` | `mist:merged:devices:v2` + `mist:site:summary`      | `{siteId}` + `{siteId}:stats-devices-total:{type}:{status}` | **300 s** / **180 s**        |
-| `/api/mist/sites/[siteId]/devices-catalog` | `/api/v1/mist/sites/:siteId/devices-catalog`   | `getSiteDevicesCatalog` | **None** (live Mist pagination)                                                    | —                                                   | —                                                           | **Uncached**                 |
-| `/api/mist/sites/[siteId]/devices`         | `/api/v1/mist/sites/:siteId/devices`           | `getDeviceList`         | Via `buildMergedDevices`                                                           | `mist:merged:devices:v2`                            | `{siteId}`                                                  | **300 s** + in-memory filter |
-| `/api/mist/sites/.../devices/[deviceId]`   | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail`       | `buildMergedDevices` + Mist `GET …/devices/{id}` fallback                          | `mist:merged:devices:v2` (+ live Mist read on miss) | `{siteId}`                                                  | **300 s**                    |
-| `/api/mist/inventory`                      | `/api/v1/mist/inventory`                       | `getOrgInventory`       | Direct                                                                             | `mist:inventory:org`                                | `{orgId}:{JSON.stringify(filters)}`                         | **900 s** (15 min)           |
-| `/api/mist/sites/[siteId]/client-stats`    | `/api/v1/mist/sites/:siteId/client-stats`      | `getSiteClientStats`    | Direct                                                                             | `mist:clients:site`                                 | `{siteId}:{JSON.stringify(options)}`                        | **120 s** (2 min)            |
+| BFF (browser)                              | Express `GET`                                  | Service function        | `getOrSet`                                                                                 | Redis `keyPrefix`                                | Cache key shape                                   | TTL                   |
+| ------------------------------------------ | ---------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------- | --------------------- |
+| `/api/mist/sites`                          | `/api/v1/mist/sites`                           | `getOrgSites`           | Direct                                                                                     | `mist:org:sites`                                 | `{orgId}:{page}:{limit}`                          | **300 s** (5 min)     |
+| `/api/mist/sites/[siteId]/site-summary`    | `/api/v1/mist/sites/:siteId/site-summary`      | `getSiteSummary`        | One full Mist `/stats/devices?type=all` snapshot, then server-side counting by type/status | `mist:site:summary` + `mist:site:stats:snapshot` | `{siteId}`                                        | **180 s** / **300 s** |
+| `/api/mist/sites/[siteId]/devices-catalog` | `/api/v1/mist/sites/:siteId/devices-catalog`   | `getSiteDevicesCatalog` | Same paginated **`/stats/devices?type=all`** walk as snapshot (no site `/devices` API)     | `mist:site:stats:snapshot`                       | `{siteId}`                                        | **300 s**             |
+| `/api/mist/sites/[siteId]/devices`         | `/api/v1/mist/sites/:siteId/devices`           | `getDeviceList`         | Direct                                                                                     | `mist:site:stats:devices`                        | `{siteId}:t:{type}:s:{status}:p:{page}:l:{limit}` | **120 s**             |
+| `/api/mist/sites/.../devices/[deviceId]`   | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail`       | Stats snapshot lookup by id/MAC (no bulk org inventory fallback)                           | `mist:site:stats:snapshot`                       | `{siteId}`                                        | **300 s**             |
+| `/api/mist/inventory`                      | `/api/v1/mist/inventory`                       | `getOrgInventory`       | Direct                                                                                     | `mist:inventory:org`                             | `{orgId}:{JSON.stringify(filters)}`               | **900 s** (15 min)    |
+| `/api/mist/sites/[siteId]/client-stats`    | `/api/v1/mist/sites/:siteId/client-stats`      | `getSiteClientStats`    | Direct                                                                                     | `mist:clients:site`                              | `{siteId}:{JSON.stringify(options)}`              | **120 s** (2 min)     |
 
-**Merged devices loader** (cache miss for `mist:merged:devices:v2:{siteId}`): `GET /api/v1/sites/{id}/stats/devices` plus **paginated** `GET /api/v1/sites/{id}/devices` for **AP and switch**, merged in [`buildMergedDevices`](apps/backend/src/services/mist.service.ts). **Device detail** uses the merged list when possible, otherwise **Mist `GET /api/v1/sites/{id}/devices/{device_id}`** (e.g. switches). **Org sites loader**: `mistFetchWithMeta` to `GET /api/v1/orgs/{orgId}/sites` with `page`/`limit`.
+**Site device table (`getDeviceList`)** — Mist **`GET /api/v1/sites/{id}/stats/devices`** with `limit` / `page`, optional `status`, and `type` of `ap`, `switch`, or (when the UI sends no type) **`type=all`**. Omitting `type` on Mist often returns **AP-only** rows; `type=all` includes switches in practice. Each row is [`normalizeDevice`](apps/backend/src/services/mist.service.ts) (Mist’s `status` field is authoritative). Cached under **`mist:site:stats:devices`** (see table above).
+
+**Full-site stats snapshot (`mist:site:stats:snapshot:{siteId}`)** — On cache miss, the backend walks Mist **`GET /api/v1/sites/{id}/stats/devices`** with **`type=all`**, **`limit`/`page`** until the list is complete, then [`normalizeDevice`](apps/backend/src/services/mist.service.ts). The same snapshot backs **`getDeviceDetail`** (lookup by id/MAC), **`getSiteDevicesCatalog`**, the live-stats stream **allowlist**, and **`getSiteSummary`** (server-side count aggregation).
 
 **Not application-JSON cached** (no `getOrSet` on the response body):
 
@@ -154,7 +156,7 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 | `GET /api/v1/mist/sites/:siteId/devices-stats/stream` | **SSE** proxy of Mist **WebSocket** `/api-ws/v1/stream` subscribed to `/sites/{siteId}/stats/devices` ([`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts)). |
 | `GET /api/v1/mist/queue/status`                       | Live **BullMQ** + SSE stats (reads queue state in Redis, not a Mist payload cache).                                                                                                             |
 
-**Rate limit in plain English:**
+**Rate limit**
 
 - We do not trust Mist to tell us remaining quota in headers.
 - We track usage ourselves in Redis.
@@ -164,7 +166,7 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 - We also limit concurrent calls in each backend process.
 - Direct requests and queued worker requests both use the same Redis budget logic.
 
-`mist:site:summary` is used for status-filtered `/stats/devices` total counters (`connected` / `disconnected` by `type`) inside `getSiteSummary`.
+`mist:site:summary` caches the aggregated counts produced from the full-site stats snapshot inside `getSiteSummary`.
 
 Queue flow in plain English:
 
@@ -204,17 +206,17 @@ Queue flow in plain English:
 
 - **Organization sites** listing with pagination
 - **Device inventory** with enhanced switch detection
-- **Client statistics** for wireless access points — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** (BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site when filtering by AP). Full flow, endpoints, and field mapping: [AP device detail: Connected Clients](#ap-device-detail-connected-clients).
+- **Client statistics** for AP and wired clients — lists are built from Mist **`GET /api/v1/sites/{siteId}/stats/clients`** with both `wired=false` and `wired=true` (merged server-side; BFF: `/api/mist/sites/.../client-stats`). On the device detail page, **Connected Clients** filters those rows to the current AP; the **Clients** summary card uses **`num_clients`** from AP device stats, so the two can differ if Mist omits AP linkage on client rows or results are paginated (we request up to 1000 rows per site per wired mode when filtering by AP). Full flow, endpoints, and field mapping: [AP device detail: Connected Clients](#ap-device-detail-connected-clients).
 - **Site summaries** with device counts and status
 - **Real-time device monitoring** with connection status
-- **How site table Status is determined** (merge, inventory enrichment, `resolveRowStatus`) — see [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown)
+- **How site table Status is determined** (`/stats/devices` list + `resolveRowStatus`) — see [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown)
 
 ### Performance & Reliability
 
 - **Rate limiting**: Every **`mistFetch`** waits for capacity under rolling **per-minute** (default 300, `MIST_MAX_REQUESTS_PER_MINUTE`) and **per-hour** (default 5000, `MIST_MAX_REQUESTS_PER_HOUR`) caps plus **10** concurrent requests; aligns with typical Mist org quotas.
-- **Caching strategy**: Redis — **5min** org sites (per page) and **5min** merged devices per site (summary/list/detail share one key); **15min** inventory; **2min** client stats; **10min** in-memory fallback when Redis is down
+- **Caching strategy**: Redis — **5 min** org sites (per page); **5 min** full-site **`/stats/devices`** snapshot per site (`mist:site:stats:snapshot`, detail/catalog/stream allowlist/summary aggregation); **2 min** paginated table queries (`mist:site:stats:devices`); **15 min** inventory; **2 min** client stats; **10 min** in-memory fallback when Redis is down
 - **Queue system**: BullMQ with Redis backing for rate-limited requests
-- **Progressive loading**: Site cards load basic info first, then enhance with inventory/client data
+- **Progressive loading**: Site cards load basic info first, then enhance with site-summary device counts
 - **Error handling**: Graceful degradation with partial data display
 
 ### User Experience
@@ -339,7 +341,7 @@ Site overview and site-devices specs resolve the **first org site** from the API
 - `GET /api/mist/sites` - Organization sites with pagination
 - `GET /api/mist/sites/[siteId]/site-summary` - Site device summary
 - `GET /api/mist/sites/[siteId]/devices` - Site devices with filtering
-- `GET /api/mist/sites/[siteId]/devices-catalog` - Paginated Mist `GET /sites/{id}/devices` (AP + switch) for site table rows
+- `GET /api/mist/sites/[siteId]/devices-catalog` - Full site list from the same **`/stats/devices`** snapshot as detail/stream (cached); not loaded by the default dashboard table
 - `GET /api/mist/sites/[siteId]/devices-stats/stream` - SSE live device stats (Mist WebSocket, same-origin)
 - `GET /api/mist/sites/[siteId]/devices/[deviceId]` - Device details
 - `GET /api/mist/inventory` - Organization inventory with filtering
@@ -348,11 +350,11 @@ Site overview and site-devices specs resolve the **first org site** from the API
 ### Backend (Express Routes)
 
 - `GET /api/v1/mist/sites` - Org sites (cached **5min** per org/page/limit)
-- `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary (uses **5min** merged-devices cache per site)
-- `GET /api/v1/mist/sites/:siteId/devices` - Site devices (same **5min** merged-devices cache)
-- `GET /api/v1/mist/sites/:siteId/devices-catalog` - Full site device list from Mist `GET /sites/{id}/devices` (paginated AP + switch, uncached)
+- `GET /api/v1/mist/sites/:siteId/site-summary` - Site summary from one full **`/stats/devices?type=all`** snapshot with server-side counts (**`mist:site:summary`** / **`mist:site:stats:snapshot`**)
+- `GET /api/v1/mist/sites/:siteId/devices` - Site device **table** page: Mist **`GET /sites/{id}/stats/devices`** with pagination and filters (**2 min** cache per site + filter + page + limit)
+- `GET /api/v1/mist/sites/:siteId/devices-catalog` - Full site device summaries from the **stats snapshot** (**5 min** Redis, same key as detail lookup)
 - `GET /api/v1/mist/sites/:siteId/devices-stats/stream` - SSE stream of live device stats (Mist WebSocket backend)
-- `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail (same **5min** merged-devices cache)
+- `GET /api/v1/mist/sites/:siteId/devices/:deviceId` - Device detail from **stats snapshot** (lookup by id/MAC)
 - `GET /api/v1/mist/inventory` - Org inventory (cached 15min)
 - `GET /api/v1/mist/sites/:siteId/client-stats` - Client stats (cached 2min)
 - `GET /api/v1/mist/events/:clientId` - SSE endpoint for real-time updates
@@ -397,28 +399,6 @@ Access queue monitoring at `/admin/queues` with basic authentication:
 - Monitor job processing times and retry attempts
 - Debug rate limiting and queue performance
 
-### Queue Statistics
-
-Monitor queue health via `/api/v1/mist/queue/status`:
-
-```json
-{
-  "ok": true,
-  "data": {
-    "queue": {
-      "waiting": 0,
-      "active": 2,
-      "completed": 150,
-      "failed": 1
-    },
-    "sse": {
-      "connectedClients": 3,
-      "clients": ["client-uuid-1", "client-uuid-2"]
-    }
-  }
-}
-```
-
 ### Cache Performance
 
 Redis cache with intelligent fallback:
@@ -455,94 +435,72 @@ Redis cache with intelligent fallback:
 
 ## Site device status: Connected, Disconnected, and Unknown
 
-This section describes how the **Status** column on `/site/[siteId]` is filled end to end: Mist REST → backend merge and enrichment → APIs the dashboard calls → table resolution. **Live stats (SSE/WebSocket) does not set Status**; it only updates other columns when enabled (see [Future improvements](#future-improvements)).
+This section describes how the **Status** and **Connection** columns on `/site/[siteId]` are filled: **paginated** Mist **`/stats/devices`** rows (via our BFF), [`resolveRowStatus`](apps/frontend/src/components/mist/mist-devices-table.tsx) for the badge, and **row status** for offline/online when live stats are off — **no bulk org inventory** on the site table. **Site summary** and **device detail** use the same stats API (totals + cached full-site snapshot); **we do not use Mist `GET /sites/{id}/devices`**. **Live stats (SSE/WebSocket) does not set Status**; it only updates other columns when enabled (see [Future improvements](#future-improvements)).
 
-### Pipeline overview
+### Pipeline: site device table (list)
 
-| Step | Where                                                                                      | Input                                                                      | Output                                                                                                                                                                                                                                                                                       |
-| ---- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Mist API                                                                                   | `GET /api/v1/sites/{siteId}/stats/devices`                                 | AP-centric stats rows (often with link/connection fields).                                                                                                                                                                                                                                   |
-| 2    | Mist API                                                                                   | Paginated `GET /api/v1/sites/{siteId}/devices` (`type=ap` + `type=switch`) | Full site catalog rows (AP + switch).                                                                                                                                                                                                                                                        |
-| 3    | Backend [`buildMergedDevices`](apps/backend/src/services/mist.service.ts)                  | Stats + catalog                                                            | `MistDeviceDetail[]`: stats rows merged with matching catalog by device key; devices only on catalog appended. Each row: `normalizeDevice(stats, config?)` → `toDeviceStatus(merged raw)`.                                                                                                   |
-| 4    | Backend [`enrichUnknownStatusFromOrgInventory`](apps/backend/src/services/mist.service.ts) | Merged list                                                                | If any row has `status === "unknown"`, load `GET /api/v1/orgs/{orgId}/inventory?site_id=…` via [`getOrgInventory`](apps/backend/src/services/mist.service.ts), match by **id** then **normalized MAC**, set `connected` / `disconnected` from inventory. On failure, returns list unchanged. |
-| 5    | Express                                                                                    | `GET /api/v1/mist/sites/:siteId/devices`                                   | `getDeviceList` → merged + enriched list (cached under `mist:merged:devices:v2`).                                                                                                                                                                                                            |
-| 6    | Express                                                                                    | `GET /api/v1/mist/sites/:siteId/devices-catalog`                           | Catalog summaries only (no enrichment); drives table rows and pagination.                                                                                                                                                                                                                    |
-| 7    | Browser                                                                                    | Dashboard `fetch`                                                          | Parallel: `site-summary`, `devices-catalog`, `devices` (merged).                                                                                                                                                                                                                             |
-| 8    | Frontend [`resolveRowStatus`](apps/frontend/src/components/mist/mist-devices-table.tsx)    | Per row: catalog + `mergedById` + optional inventory                       | Final `MistDeviceStatus` for the **Status** badge.                                                                                                                                                                                                                                           |
+| Step | Where                                                                                   | Input                                                                                           | Output                                                                                                                                                                                       |
+| ---- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Mist API                                                                                | `GET /api/v1/sites/{siteId}/stats/devices` with `limit` / `page`, optional `status`, and `type` | Stats rows for the current page. When our API receives **no** `type` query, the backend sends **`type=all`** to Mist so **switches** are included (unfiltered Mist calls are often AP-only). |
+| 2    | Backend [`getDeviceList`](apps/backend/src/services/mist.service.ts)                    | Mist JSON array                                                                                 | `normalizeDevice(row)` → `MistDeviceDetail` with `status: toDeviceStatus(raw)`.                                                                                                              |
+| 3    | Express                                                                                 | `GET /api/v1/mist/sites/:siteId/devices`                                                        | JSON `{ data, meta }`; body cached under **`mist:site:stats:devices`** (per site + filters + page + limit).                                                                                  |
+| 4    | Browser                                                                                 | Dashboard [`mist-dashboard.tsx`](apps/frontend/src/components/mist/mist-dashboard.tsx)          | Parallel **`site-summary`** + **`devices?page&limit&…`** (no **`devices-catalog`** for the table).                                                                                           |
+| 5    | Frontend [`resolveRowStatus`](apps/frontend/src/components/mist/mist-devices-table.tsx) | Table row + `mergedById`                                                                        | **Status** / **Connection**: Mist **`raw.status`** and normalized `device.status` (no bulk org inventory on the table).                                                                      |
 
-### Backend: merge logic (`buildMergedDevices`)
+### Backend: full-site stats snapshot (detail, catalog, stream allowlist, summary aggregation)
 
-| Branch          | Behavior                                                                                                                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stats non-empty | For each stats row, find same-key catalog row, `normalizeDevice(stats, config)`. Append `normalizeDevice(device)` for catalog-only rows (typical **switches** not present in stats). |
-| Stats empty     | Every catalog row → `normalizeDevice(device)` only.                                                                                                                                  |
+[`getSiteStatsDevicesSnapshot`](apps/backend/src/services/mist.service.ts) paginates **`GET /api/v1/sites/{id}/stats/devices?type=all`** until all rows are read, then normalizes (no org-inventory bulk fetch). **Not** used for the paginated table (`getDeviceList` uses filtered **`/stats/devices`** with its own Redis keys).
 
-`normalizeDevice` builds `{ ...config, ...stats }` and sets `status: toDeviceStatus(merged)` (see next table).
+`normalizeDevice` sets `status: toDeviceStatus(raw)` (see next table). There is **no** merge with site **`/devices`**.
 
 ### Backend: `toDeviceStatus` (Mist row → `connected` \| `disconnected` \| `unknown`)
 
 Implemented in [`mist.service.ts`](apps/backend/src/services/mist.service.ts) (`toDeviceStatus`, `truthyConnection`). Examples of fields considered (not exhaustive):
 
-| Kind         | Mist-style fields (booleans/strings normalized)                                                                                                                                                                              |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Booleans     | `connected`, `device_connected`, `deviceConnected`, `cloud_connected`, `lan_connected`, `l2tp_connected`, `wan_up`; `disabled === true` → disconnected.                                                                      |
-| String blobs | `status`, `connection_status`, `conn_status`, `device_status`, `cloud_connection_state`, `wan_status`, `oper_state`, `operational_state` — substrings like `connected`, `up`, `online` vs `disconnected`, `down`, `offline`. |
+| Kind               | Mist-style fields (booleans/strings normalized)                                                                                                                                                                        |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`status` first** | Stats **`/stats/devices`** row: string **`status`** (e.g. `"connected"`, `"disconnected"`) is evaluated **before** booleans so it wins over fields like `wan_up`.                                                      |
+| Booleans           | `connected`, `device_connected`, `deviceConnected`, `cloud_connected`, `lan_connected`, `l2tp_connected`, `wan_up`; `disabled === true` → disconnected.                                                                |
+| Other string keys  | `connection_status`, `conn_status`, `device_status`, etc. (lowercased). **Order:** `disconnected` / `down` / `offline` before `connected` / `up` / `online` (substring **`"connected"`** inside **`"disconnected"`**). |
 
-If nothing matches → **`unknown`** (common for switches on raw site `/devices` when Mist omits link state).
-
-### Backend: org inventory enrichment
-
-Runs only when at least one merged device is still `unknown`. Calls Mist **`GET /api/v1/orgs/{orgId}/inventory`** with `site_id`, `limit=1000`, `page=1`. Matching is **device id first** (primary path), then **MAC** fallback after `normalizeMacForMatch` (hex only, lowercased).
-
-Used by **`getDeviceList`**, **`getDeviceDetail`** (list lookup path), and **`getSiteSummary`** so summary cards and merged API stay aligned.
+If nothing matches → **`unknown`**.
 
 ### Backend: site summary metric cards (`getSiteSummary`)
 
-| Counter                 | Rule                                                                                                                                                     |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `byType.*.connected`    | Prefer Mist `/stats/devices` totals with `type` + `status=connected`; fallback: `device.status === "connected"` from merged+enriched list.               |
-| `byType.*.disconnected` | Prefer Mist `/stats/devices` totals with `type` + `status=disconnected`; fallback: non-connected devices (includes `unknown`) from merged+enriched list. |
+| Counter                 | Rule                                                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `byType.*.connected`    | Computed from normalized rows in one full **`/stats/devices?type=all`** snapshot (status = `connected`).            |
+| `byType.*.disconnected` | Computed from normalized rows in the same snapshot (status != `connected`, including `disconnected` and `unknown`). |
+| `totalDevices`          | Snapshot row count. Unknown type bucket is rows that are neither `ap` nor `switch`.                                 |
 
 ### Frontend: dashboard data sources
 
-| Request                                                     | Purpose                                  | Status relevance                                                                                                               |
-| ----------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/mist/sites/{siteId}/devices-catalog`              | Catalog fallback fields (name/model/etc) | Base device info; not the primary filter source anymore.                                                                       |
-| `GET /api/mist/sites/{siteId}/devices?type=...&status=...`  | **Table row source** (backend-filtered)  | Filters are applied on backend; table rows come from this response.                                                            |
-| `GET /api/mist/sites/{siteId}/site-summary`                 | Metric cards                             | Uses merged+enriched list, then overrides AP/Switch connected/disconnected with cached `/stats/devices` totals when available. |
-| `GET /api/mist/inventory?siteId=…` (from table `useEffect`) | Extra row data                           | Fallback for connection/serial fields when merged row is sparse.                                                               |
+| Request                                                       | Purpose                           | Notes                                                                                                                                                         |
+| ------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/mist/sites/{siteId}/devices?page&limit&type&status` | **Table rows + pagination**       | Backend → Mist **`/stats/devices`**; **`type=all`** when type omitted.                                                                                        |
+| `GET /api/mist/sites/{siteId}/site-summary`                   | Metric cards                      | One full **`/stats/devices?type=all`** snapshot, then server-side type/status counting.                                                                       |
+| `GET /api/mist/sites/{siteId}/devices-catalog`                | Optional full list (stats-backed) | Same Redis snapshot as detail; **not** loaded by the default dashboard table.                                                                                 |
+| `GET /api/mist/inventory?…`                                   | Device detail / targeted lookups  | **Device detail** page uses **filtered** inventory (serial/model/MAC), not a site-wide bulk pull. Org sites cards use **`site-summary`**, not bulk inventory. |
 
 ### Frontend: `resolveRowStatus` (Status badge)
 
 First match wins:
 
-| Priority | Source        | Condition                                                                                     |
-| -------- | ------------- | --------------------------------------------------------------------------------------------- |
-| 1        | Merged device | `merged.status` exists and is not `unknown`.                                                  |
-| 2        | Catalog row   | `catalog.status` is not `unknown`.                                                            |
-| 3        | Org inventory | Row matched by id/MAC in client fetch → `inventory.connected` → `connected` / `disconnected`. |
-| 4        | —             | `unknown` (Unknown badge).                                                                    |
+| Priority | Source                         | Condition                                         |
+| -------- | ------------------------------ | ------------------------------------------------- |
+| 1        | Mist **`raw.status`** string   | Parsed from stats row (`statusFromMistStatsRow`). |
+| 2        | List API detail (`mergedById`) | `merged.status` is not `unknown`.                 |
+| 3        | Table row (`device`)           | `device.status` is not `unknown`.                 |
+| 4        | —                              | `unknown` (Unknown badge).                        |
 
-```tsx
-// apps/frontend/src/components/mist/mist-devices-table.tsx
-const resolveRowStatus = (
-  catalog: MistDeviceSummary,
-  merged: MistDeviceDetail | undefined,
-  inventory: InventoryDevice | undefined,
-): MistDeviceStatus => {
-  if (merged?.status && merged.status !== "unknown") return merged.status;
-  if (catalog.status !== "unknown") return catalog.status;
-  if (inventory) return inventory.connected ? "connected" : "disconnected";
-  return "unknown";
-};
-```
+**Connection** (when live stats off): **Online** / **Offline** from the same resolved row status (no inventory fetch).
 
 ### AP vs switch in practice
 
-| Device type | Typical path to Connected/Disconnected                                                                                                                       |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **AP**      | Often present in `/stats/devices` → merge sets status from stats + `toDeviceStatus`.                                                                         |
-| **Switch**  | Often **only** on site `/devices` → `toDeviceStatus` may return `unknown` until **backend enrichment** (inventory) or **frontend inventory** match fills it. |
+| Device type | Table list (`/stats/devices`)                               | Summary / detail                                                                               |
+| ----------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **AP**      | Paginated stats rows; Mist **`status`** + `toDeviceStatus`. | Counts from full-site **stats snapshot** aggregation; detail row from **stats snapshot** only. |
+| **Switch**  | Include with **`type=all`** (or `type=switch`); same as AP. | Same as AP; no site **`/devices`** merge.                                                      |
 
 ---
 
@@ -554,7 +512,7 @@ Example URL shape: `/site/{siteId}/devices/{deviceId}` (e.g. `http://localhost:3
 
 | Order        | Browser → BFF                                                                               | BFF → Express                                      | Backend → Mist                                                                   | Purpose                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| 1            | `GET /api/mist/sites/{siteId}/devices/{deviceId}`                                           | `GET /api/v1/mist/sites/:siteId/devices/:deviceId` | `buildMergedDevices` cache + optional `GET /api/v1/sites/{siteId}/devices/{id}`  | Load **`MistDeviceDetail`** (`device.raw`, type, name, stats fields such as `num_clients`).                      |
+| 1            | `GET /api/mist/sites/{siteId}/devices/{deviceId}`                                           | `GET /api/v1/mist/sites/:siteId/devices/:deviceId` | **Stats snapshot** Redis cache (lookup by id/MAC)                                | Load **`MistDeviceDetail`** (`device.raw`, type, name, stats fields such as `num_clients`).                      |
 | 2 (AP only)  | `GET /api/mist/sites/{siteId}/client-stats?apId={device.id}&limit=100`                      | `GET /api/v1/mist/sites/:siteId/client-stats`      | **`GET /api/v1/sites/{siteId}/stats/clients`** with a raised `limit` (see below) | Build the **Connected Clients** list for this AP.                                                                |
 | 3 (optional) | `GET /api/mist/inventory?siteId={siteId}&serial={serial}&model={model}&mac={mac}&limit=100` | `GET /api/v1/mist/inventory`                       | `GET /api/v1/orgs/{orgId}/inventory?site_id=…&serial=…&model=…&mac=…`            | **Inventory Details** block (serial, online/offline, profile, etc.). Uses targeted filters, not full-site fetch. |
 
@@ -566,12 +524,12 @@ Implemented in [`getSiteClientStats`](apps/backend/src/services/mist.service.ts)
 
 | Setting                          | Value                                                                                                                                                                             |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mist endpoint                    | `GET /api/v1/sites/{siteId}/stats/clients` with query `limit` (and optional `duration`).                                                                                          |
+| Mist endpoint                    | Two calls to `GET /api/v1/sites/{siteId}/stats/clients`: one with `wired=false` and one with `wired=true` (each with `limit` and optional `duration`), merged server-side.     |
 | `limit` when filtering by AP     | `min(1000, max(300, (options.limit ?? 100) * 10))`. For UI `limit=100` → **1000** rows requested so clients tied to the AP are less likely to be cut off by pagination.           |
 | Why not Mist `ap_id` query param | Comment in code: Mist’s `ap_id` query is **unreliable**; we fetch a wide site list and filter server-side.                                                                        |
 | Filter                           | Keep rows where `ap_id` on our normalized row (see below) equals **`options.apId`** (case-insensitive, trimmed).                                                                  |
 | Cap after filter                 | `slice(0, options.limit ?? 100)` → at most **100** clients returned to the UI for the Connected Clients list.                                                                     |
-| Cache                            | Redis key prefix **`mist:clients:site`** (per `siteId` + JSON-stringified options); TTL **120 s** — see [Mist data endpoints](#mist-data-endpoints-redis-keys-ttl-and-read-flow). |
+| Cache                            | Redis key prefix **`mist:clients:site`** (per `siteId` + JSON-stringified options, merged result cached); TTL **120 s** — see [Mist data endpoints](#mist-data-endpoints-redis-keys-ttl-and-read-flow). |
 
 ### Mapping Mist client rows → `ClientStats` → UI
 
@@ -593,10 +551,10 @@ In [`DeviceDetailView`](apps/frontend/src/components/mist/device-detail-view.tsx
 
 ### “Clients” summary card vs Connected Clients list
 
-| UI block                                       | Data source                                                                 | Meaning                                                         |
-| ---------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **Clients** (large number in the metric strip) | `device.raw.num_clients` from the **device** payload (merged AP **stats**). | Mist’s count on that AP stats object.                           |
-| **Connected Clients**                          | Filtered **`/stats/clients`** rows for this **`device.id`**.                | Individual client rows; capped at 100 from API, first 10 shown. |
+| UI block                                       | Data source                                                                           | Meaning                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| **Clients** (large number in the metric strip) | `device.raw.num_clients` from the **device** payload (AP stats on the detail object). | Mist’s count on that AP stats object.                           |
+| **Connected Clients**                          | Filtered **`/stats/clients`** rows for this **`device.id`**.                          | Individual client rows; capped at 100 from API, first 10 shown. |
 
 They can **differ**: Mist may report `num_clients` while client rows use another id field, pagination may omit rows, or stats and client list may be briefly inconsistent. The UI includes an **info** modal on the device page when `num_clients > 0` but the filtered list is empty — see [`DeviceDetailView`](apps/frontend/src/components/mist/device-detail-view.tsx).
 
@@ -608,13 +566,13 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 
 ## Future improvements
 
-- **Mist live device stats (SSE + WebSocket)** — The site dashboard (`/site/[siteId]`) can enable **Stream live stats**, which opens same-origin SSE (`GET /api/mist/sites/.../devices-stats/stream` → Express → Mist WebSocket `wss://…/api-ws/v1/stream`, subscribe `/sites/{siteId}/stats/devices`). Implementation: hub [`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts), BFF proxy `apps/frontend/src/app/api/mist/sites/[siteId]/devices-stats/stream/route.ts`, hook [`use-mist-device-stats-stream.ts`](apps/frontend/src/hooks/use-mist-device-stats-stream.ts), table merge in [`mist-devices-table.tsx`](apps/frontend/src/components/mist/mist-devices-table.tsx). **Good E2E checklist:** (1) open a site with APs, toggle live stats, confirm badge goes to “Live stats on” and AP rows update **Last seen / IP / Clients / Connection** when Mist pushes data; (2) stop live stats and confirm SSE closes and backend hub tears down the WS when the last subscriber leaves; (3) try a **regional** org — set `MIST_WS_BASE_URL` if REST is not `api.mist.com` (see [`getMistWsBaseUrl`](apps/backend/src/lib/mist/config.ts)). **Reliability work (connection sometimes fails):** add retries/backoff around initial WS connect, surface hub `stream_status` (`reconnecting` / `error`) in the UI with last error text, consider heartbeat/timeouts vs Mist’s behavior, and optionally add Playwright coverage that mocks upstream or asserts the stream toggle + degraded UI when the backend returns non-200 for the SSE route.
+- **Mist live device stats (SSE + WebSocket)** — The site dashboard (`/site/[siteId]`) can enable **Stream live stats**, which opens same-origin SSE (`GET /api/mist/sites/.../devices-stats/stream` → Express → Mist WebSocket `wss://…/api-ws/v1/stream`, subscribe `/sites/{siteId}/stats/devices`). Implementation: hub [`mist-device-stats-stream.ts`](apps/backend/src/lib/mist/mist-device-stats-stream.ts), BFF proxy `apps/frontend/src/app/api/mist/sites/[siteId]/devices-stats/stream/route.ts`, hook [`use-mist-device-stats-stream.ts`](apps/frontend/src/hooks/use-mist-device-stats-stream.ts), live values overlaid in [`mist-devices-table.tsx`](apps/frontend/src/components/mist/mist-devices-table.tsx). **Good E2E checklist:** (1) open a site with APs, toggle live stats, confirm badge goes to “Live stats on” and AP rows update **Last seen / IP / Clients / Connection** when Mist pushes data; (2) stop live stats and confirm SSE closes and backend hub tears down the WS when the last subscriber leaves; (3) try a **regional** org — set `MIST_WS_BASE_URL` if REST is not `api.mist.com` (see [`getMistWsBaseUrl`](apps/backend/src/lib/mist/config.ts)). **Reliability work (connection sometimes fails):** add retries/backoff around initial WS connect, surface hub `stream_status` (`reconnecting` / `error`) in the UI with last error text, consider heartbeat/timeouts vs Mist’s behavior, and optionally add Playwright coverage that mocks upstream or asserts the stream toggle + degraded UI when the backend returns non-200 for the SSE route.
 
-- **Site device table — Status** — Fully documented in [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown) (merge, enrichment, `resolveRowStatus`, summary cards).
+- **Site device table — Status** — Fully documented in [Site device status: Connected, Disconnected, and Unknown](#site-device-status-connected-disconnected-and-unknown) (`/stats/devices` list, enrichment, `resolveRowStatus`, summary vs table caches).
 
 - **Load and rate-limit stress tests** — Add tooling (for example k6, Artillery, or distributed Playwright workers) to simulate **many concurrent users** hitting BFF and Express Mist routes, then observe **Redis cache hit rates**, **BullMQ depth**, **429 / queue enqueue behavior**, and **SSE fan-out** under the configured limits (see [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts)). Run against a non-production Mist org or mocked upstream so org API quotas stay safe.
 
-- **3D site visualization (APs + switches)** — Render a navigable **3D / 2.5D** scene per site using indoor coordinates from Mist (`x_m`, `y_m`, `height`, `map_id`) plus merged device types and status; link into the existing table and device detail flows. Full library comparison, architecture, and phased plan: [3D site visualization](#3d-site-visualization-aps-switches-floor-context).
+- **3D site visualization (APs + switches)** — Render a navigable **3D / 2.5D** scene per site using indoor coordinates from Mist (`x_m`, `y_m`, `height`, `map_id`) plus device type/status from the **table list** or **`devices-catalog`**; link into the existing table and device detail flows. Full library comparison, architecture, and phased plan: [3D site visualization](#3d-site-visualization-aps-switches-floor-context).
 
 ### 3D site visualization (APs, switches, floor context)
 
@@ -622,12 +580,12 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 
 **What we already have (integration points):**
 
-| Source                                                                                                                          | Use in 3D                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Merged site devices (`GET /api/mist/sites/{siteId}/devices`, [`buildMergedDevices`](apps/backend/src/services/mist.service.ts)) | Device list, type (`ap` / `switch`), `id`, name, `status`.                                                                                                                                                                          |
-| Device raw fields `x_m`, `y_m`, `height`, `map_id`                                                                              | Indoor placement in meters (same as [`device-floor-placement.tsx`](apps/frontend/src/components/mist/device-floor-placement.tsx)); devices without coordinates need a **fallback layout** (grid, circle pack, or stacked by floor). |
-| Site org metadata (`latlng` on sites)                                                                                           | Optional **geo backdrop** or orientation only; indoor `x_m`/`y_m` remain primary for campus maps.                                                                                                                                   |
-| Live stats SSE (beta)                                                                                                           | Future: tint meshes or halos by **live** reachability / client load (see live stream hub).                                                                                                                                          |
+| Source                                                                                                                                                           | Use in 3D                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Site device list (`GET /api/mist/sites/{siteId}/devices`, [`getDeviceList`](apps/backend/src/services/mist.service.ts)) + optional catalog (`…/devices-catalog`) | Device list, type (`ap` / `switch`), `id`, name, `status` (table uses **stats** endpoint; catalog adds placement / inventory-style fields if needed).                                                                               |
+| Device raw fields `x_m`, `y_m`, `height`, `map_id`                                                                                                               | Indoor placement in meters (same as [`device-floor-placement.tsx`](apps/frontend/src/components/mist/device-floor-placement.tsx)); devices without coordinates need a **fallback layout** (grid, circle pack, or stacked by floor). |
+| Site org metadata (`latlng` on sites)                                                                                                                            | Optional **geo backdrop** or orientation only; indoor `x_m`/`y_m` remain primary for campus maps.                                                                                                                                   |
+| Live stats SSE (beta)                                                                                                                                            | Future: tint meshes or halos by **live** reachability / client load (see live stream hub).                                                                                                                                          |
 
 **Recommended stack (frontend):**
 
@@ -640,12 +598,12 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 
 **Suggested architecture:**
 
-1. **New UI surface** — e.g. route ` /site/[siteId]/floor-3d` or a **tab / split pane** on the existing site dashboard; load the same merged device payload (and optionally inventory) the table already uses.
+1. **New UI surface** — e.g. route ` /site/[siteId]/floor-3d` or a **tab / split pane** on the existing site dashboard; load the **paginated stats-backed list** and/or **`devices-catalog`** depending on whether you need coordinates for every device in one shot.
 2. **Scene graph** — One `Scene` per site view: **lights**, **floor plane** (grid or textured quad), **device group** with separate materials for AP vs switch (instanced meshes when device count is large).
 3. **Coordinates** — Use `(x_m, y_m)` as horizontal plane; use `height` (or a default) for vertical offset. Group by `map_id` / floor if Mist returns multiple maps (multi-floor: separate layers or Z offset per floor index).
 4. **Interaction** — Raycast on click → highlight device → `router.push` to `/site/.../devices/{id}` or sync selection with URL `?highlight=`. **Keyboard**: orbit / pan alternatives; **reduced motion**: offer 2D schematic fallback (extend current floor placement card).
 5. **Textures / floor truth** — Phase 2+: investigate Mist **map / floor plan** APIs or exported images; apply as a **plane texture** under devices; calibrate scale so `x_m`/`y_m` align (may need map metadata from Mist docs).
-6. **Status encoding** — Color or emissive intensity from merged `status` (and later live stream); legend in UI matching **Connected / Disconnected / Unknown**.
+6. **Status encoding** — Color or emissive intensity from list **`status`** (and later live stream); legend in UI matching **Connected / Disconnected / Unknown**.
 7. **Performance** — `InstancedMesh` or drei `Instances` for 50–500 devices; `useFrame` only where needed; **dynamic import** of the canvas component to avoid SSR WebGL issues; observe **memory** on long sessions.
 8. **Testing** — Visual regression (Playwright screenshots) optional; unit-test **coordinate normalization** and **fallback layout** pure functions in `@repo/ui` or `apps/frontend/src/lib/mist/`.
 

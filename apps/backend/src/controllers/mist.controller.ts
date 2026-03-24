@@ -58,8 +58,15 @@ const getDeviceListController = async (req: Request, res: Response): Promise<voi
     }
     const type = req.query.type as DeviceTypeFilter | undefined;
     const status = req.query.status as DeviceStatusFilter | undefined;
-    const devices = await getDeviceList(siteId, type, status);
-    res.status(200).json({ ok: true, data: devices });
+    const limit = parsePositiveInt(req.query.limit, 10, 100);
+    const page = parsePositiveInt(req.query.page, 1);
+    const { devices, meta } = await getDeviceList(siteId, {
+      ...(type ? { type } : {}),
+      ...(status ? { status } : {}),
+      limit,
+      page,
+    });
+    res.status(200).json({ ok: true, data: devices, meta });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     res.status(500).json({ ok: false, error: message });

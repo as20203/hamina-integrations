@@ -2,11 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type {
-  MistDeviceDetail,
-  MistDeviceSummary,
-  MistSiteSummary,
-} from "@/types/mist";
+import type { MistDeviceDetail, MistSiteSummary } from "@/types/mist";
 import { Button } from "@repo/ui/components/button";
 import { Badge } from "@repo/ui/components/badge";
 import {
@@ -49,8 +45,10 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
   const { liveByMac, streamStatus } = useMistDeviceStatsStream(siteId, liveStreamOn);
 
   const [summary, setSummary] = useState<MistSiteSummary | null>(null);
-  const [catalogDevices, setCatalogDevices] = useState<MistDeviceSummary[]>([]);
-  const [mergedDevices, setMergedDevices] = useState<MistDeviceDetail[]>([]);
+  const [tableDevices, setTableDevices] = useState<MistDeviceDetail[]>([]);
+  const [devicesListMeta, setDevicesListMeta] = useState<{ total: number; page: number; limit: number } | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,48 +77,65 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     setLoading(true);
     setError(null);
     try {
-      const mergedQuery = new URLSearchParams();
+      const devicesQuery = new URLSearchParams();
+      devicesQuery.set("page", String(page));
+      devicesQuery.set("limit", String(ITEMS_PER_PAGE));
       if (typeFilter) {
-        mergedQuery.set("type", typeFilter);
+        devicesQuery.set("type", typeFilter);
       }
       if (statusFilter) {
-        mergedQuery.set("status", statusFilter);
+        devicesQuery.set("status", statusFilter);
       }
-      const mergedSuffix = mergedQuery.toString() ? `?${mergedQuery.toString()}` : "";
+      const devicesSuffix = `?${devicesQuery.toString()}`;
 
-      const [sumRes, catRes, mergedRes] = await Promise.all([
+      const [sumRes, devicesRes] = await Promise.all([
         fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/site-summary`, { cache: "no-store" }),
-        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices-catalog`, { cache: "no-store" }),
-        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices${mergedSuffix}`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices${devicesSuffix}`, { cache: "no-store" }),
       ]);
 
       const sumJson = (await sumRes.json()) as { ok?: boolean; data?: MistSiteSummary; error?: string };
-      const catJson = (await catRes.json()) as { ok?: boolean; data?: MistDeviceSummary[]; error?: string };
-      const mergedJson = (await mergedRes.json()) as { ok?: boolean; data?: MistDeviceDetail[]; error?: string };
+      const devicesJson = (await devicesRes.json()) as {
+        ok?: boolean;
+        data?: MistDeviceDetail[];
+        meta?: { total: number; page: number; limit: number };
+        error?: string;
+      };
 
       if (!sumRes.ok || !sumJson.ok) {
         throw new Error(sumJson.error || "Failed to load site summary");
       }
-      if (!catRes.ok || !catJson.ok) {
-        throw new Error(catJson.error || "Failed to load devices catalog");
-      }
-      if (!mergedRes.ok || !mergedJson.ok) {
-        throw new Error(mergedJson.error || "Failed to load merged devices");
+      if (!devicesRes.ok || !devicesJson.ok) {
+        throw new Error(devicesJson.error || "Failed to load devices");
       }
 
       setSummary(sumJson.data ?? null);
-      setCatalogDevices(catJson.data ?? []);
-      setMergedDevices(mergedJson.data ?? []);
+      setTableDevices(devicesJson.data ?? []);
+      setDevicesListMeta(devicesJson.meta ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unexpected error");
     } finally {
       setLoading(false);
     }
-  }, [siteId, typeFilter, statusFilter]);
+  }, [siteId, typeFilter, statusFilter, page]);
 
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    if (loading || !devicesListMeta) {
+      return;
+    }
+    const limit = devicesListMeta.limit || ITEMS_PER_PAGE;
+    const maxPage = Math.max(1, Math.ceil(devicesListMeta.total / limit));
+    if (devicesListMeta.total === 0 && page > 1) {
+      pushParams({ page: "1" });
+      return;
+    }
+    if (devicesListMeta.total > 0 && page > maxPage) {
+      pushParams({ page: String(maxPage) });
+    }
+  }, [loading, devicesListMeta, page, pushParams]);
 
   useEffect(() => {
     if (!siteDevicesInfoOpen) {
@@ -170,31 +185,17 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
 
   const mergedById = useMemo(() => {
     const m = new Map<string, MistDeviceDetail>();
-    for (const d of mergedDevices) {
+    for (const d of tableDevices) {
       m.set(d.id, d);
     }
     return m;
-  }, [mergedDevices]);
+  }, [tableDevices]);
 
-  const filteredDevices = useMemo<MistDeviceSummary[]>(() => {
-    const filtersActive = Boolean(typeFilter || statusFilter);
-    if (filtersActive) {
-      // When filters are active, backend /devices?type&status is the source of truth.
-      // Important: keep empty results empty; do not fall back to full catalog.
-      return mergedDevices;
-    }
-    if (mergedDevices.length > 0) {
-      return mergedDevices;
-    }
-    return catalogDevices;
-  }, [catalogDevices, mergedDevices, typeFilter, statusFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredDevices.length / ITEMS_PER_PAGE));
+  const listLimit = devicesListMeta?.limit ?? ITEMS_PER_PAGE;
+  const totalCount = devicesListMeta?.total ?? tableDevices.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / listLimit));
   const safePage = Math.min(page, totalPages);
-  const pageSlice = useMemo(() => {
-    const start = (safePage - 1) * ITEMS_PER_PAGE;
-    return filteredDevices.slice(start, start + ITEMS_PER_PAGE);
-  }, [filteredDevices, safePage]);
+  const pageRows = tableDevices;
 
   const existingParams = useMemo(() => {
     const o: Record<string, string> = {};
@@ -237,8 +238,8 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
             >
               <p className="text-muted-foreground">
                 The table loads from Mist{" "}
-                <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">GET /api/v1/sites/…/devices</code>{" "}
-                (paginated AP + switch) and merged REST for fallback fields. Use{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">GET /api/v1/sites/…/stats/devices</code>{" "}
+                with server-side type/status filters and pagination (cached on the backend). Use{" "}
                 <strong className="font-medium text-foreground">Stream live stats</strong> (beta) above the summary cards
                 for an optional SSE feed that updates live table columns only — it does not load the device list.
               </p>
@@ -350,18 +351,18 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
 
       <MistDevicesTable
         siteId={siteId}
-        devices={pageSlice}
+        devices={pageRows}
         devicesLoading={loading}
         mergedById={mergedById}
         liveByMac={liveStreamOn ? liveByMac : new Map()}
         streamStatus={liveStreamOn ? streamStatus : "idle"}
       />
 
-      {filteredDevices.length > 0 ? (
+      {totalCount > 0 ? (
         <Pagination
           currentPage={safePage}
           totalPages={totalPages}
-          total={filteredDevices.length}
+          total={totalCount}
           paramName="page"
           baseUrl={basePath}
           existingParams={existingParams}

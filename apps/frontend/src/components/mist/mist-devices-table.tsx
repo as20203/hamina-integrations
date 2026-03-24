@@ -7,7 +7,6 @@ import type {
   MistDeviceDetail,
   MistDeviceStreamStats,
   MistDeviceStatsStreamStatus,
-  InventoryDevice,
   ApiResponse,
 } from "@/types/mist";
 import { Badge } from "@repo/ui/components/badge";
@@ -32,7 +31,6 @@ type MistDevicesTableProps = {
 };
 
 type EnhancedDeviceData = {
-  inventory?: InventoryDevice;
   clientCount?: number;
 };
 
@@ -64,19 +62,45 @@ const resolveRowType = (catalog: MistDeviceSummary, merged: MistDeviceDetail | u
   return catalog.type;
 };
 
-const resolveRowStatus = (
-  catalog: MistDeviceSummary,
-  merged: MistDeviceDetail | undefined,
-  inventory: InventoryDevice | undefined
-): MistDeviceStatus => {
+/**
+ * Mist `GET …/stats/devices` rows carry link state in `status` (e.g. `"connected"`). Prefer that for the badge
+ * so the table matches Mist even if other boolean fields on the payload disagree.
+ */
+const statusFromMistStatsRow = (row: MistDeviceSummary, merged: MistDeviceDetail | undefined): MistDeviceStatus | undefined => {
+  const raw = merged?.raw ?? ("raw" in row ? (row as MistDeviceDetail).raw : undefined);
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const v = (raw as Record<string, unknown>).status;
+  if (v == null || String(v).trim() === "") {
+    return undefined;
+  }
+  const ps = String(v).trim().toLowerCase();
+  if (ps === "disconnected" || ps.includes("disconnect") || ps.includes("offline")) {
+    return "disconnected";
+  }
+  if (ps === "connected" || ps.includes("online")) {
+    return "connected";
+  }
+  if (ps.includes("down")) {
+    return "disconnected";
+  }
+  if (ps.includes("up") && !ps.includes("down")) {
+    return "connected";
+  }
+  return undefined;
+};
+
+const resolveRowStatus = (catalog: MistDeviceSummary, merged: MistDeviceDetail | undefined): MistDeviceStatus => {
+  const fromMistStatus = statusFromMistStatsRow(catalog, merged);
+  if (fromMistStatus) {
+    return fromMistStatus;
+  }
   if (merged?.status && merged.status !== "unknown") {
     return merged.status;
   }
   if (catalog.status !== "unknown") {
     return catalog.status;
-  }
-  if (inventory) {
-    return inventory.connected ? "connected" : "disconnected";
   }
   return "unknown";
 };
@@ -121,11 +145,6 @@ const MistDevicesTable = ({
 
       setLoading(true);
       try {
-        const inventoryResponse = await queueService.request<ApiResponse<InventoryDevice[]>>(
-          `/api/mist/inventory?siteId=${siteId}&limit=1000`
-        );
-        const inventoryDevices = inventoryResponse.ok ? inventoryResponse.data || [] : [];
-
         const clientResponse = await queueService.request<ApiResponse<{ clients: Record<string, unknown>[] }>>(
           `/api/mist/sites/${siteId}/client-stats?limit=1000`
         );
@@ -134,14 +153,12 @@ const MistDevicesTable = ({
         const enhanced = new Map<string, EnhancedDeviceData>();
 
         devices.forEach((device) => {
-          const inventory = inventoryDevices.find((inv) => inv.id === device.id || inv.mac === device.mac);
-
           const clientCount =
             device.type === "ap"
               ? clients.filter((c: Record<string, unknown>) => c.ap_id === device.id).length
               : undefined;
 
-          enhanced.set(device.id, { inventory, clientCount });
+          enhanced.set(device.id, { clientCount });
         });
 
         setEnhancedData(enhanced);
@@ -206,11 +223,10 @@ const MistDevicesTable = ({
           ) : (
             devices.map((device) => {
               const enhanced = enhancedData.get(device.id);
-              const inventory = enhanced?.inventory;
               const clientCount = enhanced?.clientCount;
               const merged = mergedById?.get(device.id);
               const rowType = resolveRowType(device, merged);
-              const rowStatus = resolveRowStatus(device, merged, inventory);
+              const rowStatus = resolveRowStatus(device, merged);
               const macKey = device.mac ? normalizeDeviceMac(device.mac) : "";
               const live = macKey ? liveByMac?.get(macKey) : undefined;
 
@@ -221,9 +237,7 @@ const MistDevicesTable = ({
                   ? formatUnixSeconds(lastSeenLive)
                   : lastSeenMerged != null && lastSeenMerged > 0
                     ? formatUnixSeconds(lastSeenMerged)
-                    : inventory?.modified_time
-                      ? formatUnixSeconds(inventory.modified_time)
-                      : "—";
+                    : "—";
 
               const ipDisplay =
                 streamLive && live?.ip
@@ -251,9 +265,13 @@ const MistDevicesTable = ({
                     <span className="text-xs text-muted-foreground">Uplink down</span>
                   ) : null}
                 </div>
-              ) : inventory ? (
-                <Badge variant={inventory.connected ? "default" : "secondary"} className="text-xs">
-                  {inventory.connected ? "Online" : "Offline"}
+              ) : rowStatus === "connected" ? (
+                <Badge variant="default" className="text-xs">
+                  Online
+                </Badge>
+              ) : rowStatus === "disconnected" ? (
+                <Badge variant="secondary" className="text-xs">
+                  Offline
                 </Badge>
               ) : (
                 <span className="text-muted-foreground text-xs">—</span>
@@ -287,7 +305,7 @@ const MistDevicesTable = ({
                   </TableCell>
                   <TableCell className="text-muted-foreground">{merged?.model ?? device.model ?? "—"}</TableCell>
                   <TableCell className="font-mono text-xs">
-                    {inventory?.serial || device.serial || "—"}
+                    {merged?.serial ?? device.serial ?? "—"}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{device.mac ?? "—"}</TableCell>
                   <TableCell className="font-mono text-xs">{ipDisplay}</TableCell>

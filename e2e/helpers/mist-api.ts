@@ -27,11 +27,15 @@ export const fetchFirstSite = async (request: APIRequestContext): Promise<SiteRe
   return { id, name };
 };
 
+const devicesListQuery = "limit=100&page=1";
+
 export const fetchFirstDeviceForSite = async (
   request: APIRequestContext,
   siteId: string
 ): Promise<DeviceRef | null> => {
-  const res = await request.get(`/api/mist/sites/${encodeURIComponent(siteId)}/devices`);
+  const res = await request.get(
+    `/api/mist/sites/${encodeURIComponent(siteId)}/devices?${devicesListQuery}`
+  );
   let json: unknown;
   try {
     json = await res.json();
@@ -55,7 +59,9 @@ export const fetchDevicesForSite = async (
   request: APIRequestContext,
   siteId: string
 ): Promise<DeviceRef[]> => {
-  const res = await request.get(`/api/mist/sites/${encodeURIComponent(siteId)}/devices`);
+  const res = await request.get(
+    `/api/mist/sites/${encodeURIComponent(siteId)}/devices?${devicesListQuery}`
+  );
   let json: unknown;
   try {
     json = await res.json();

@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@repo/ui/components/ca
 import { Badge } from "@repo/ui/components/badge";
 import { cn } from "@repo/ui/lib/utils";
 import { shouldSkipNavigationForTextSelection } from "@/lib/skip-navigation-if-text-selection";
-import { Clock, Crosshair, Globe2, MapPin, Server, Users, Wifi } from "lucide-react";
+import { Clock, Crosshair, Globe2, MapPin, Server } from "lucide-react";
 
 type SiteCardProps = {
   site: EnhancedSiteInfo;
@@ -90,19 +90,6 @@ const SiteCard = ({ site, className, onSelect }: SiteCardProps) => {
           </div>
         )}
 
-        {/* Client summary */}
-        {site.client_summary && (
-          <div className="flex items-center gap-2 text-sm">
-            <Users className="h-4 w-4 text-primary/80" />
-            <span>{site.client_summary.active_clients} active clients</span>
-            {site.client_summary.wireless_clients > 0 && (
-              <div className="flex items-center gap-1">
-                <Wifi className="h-3 w-3" />
-                <span className="text-xs">{site.client_summary.wireless_clients} wireless</span>
-              </div>
-            )}
-          </div>
-        )}
       </CardContent>
     </Card>
   );

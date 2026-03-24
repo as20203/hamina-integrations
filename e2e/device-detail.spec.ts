@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { fetchDevicesForSite } from "./helpers/mist-api";
 
-/** Default site used to resolve a sample device from `GET .../sites/{id}/devices` (same data as the site device table). */
+/** Default site used to resolve a sample device from the BFF devices list (Mist `/stats/devices` behind the API). */
 const DEFAULT_DEVICE_DETAIL_SITE_ID = "f339c0ca-e5c1-4e23-aed6-faf193307202";
 
 const deviceDetailSiteId = () => {

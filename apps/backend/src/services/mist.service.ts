@@ -116,14 +116,14 @@ const toDeviceStatus = (record: Record<string, unknown>): MistDeviceStatus => {
 
   const statusStr = String(
     record.status ??
-      record.connection_status ??
-      record.conn_status ??
-      record.device_status ??
-      record.cloud_connection_state ??
-      record.wan_status ??
-      record.oper_state ??
-      record.operational_state ??
-      ""
+    record.connection_status ??
+    record.conn_status ??
+    record.device_status ??
+    record.cloud_connection_state ??
+    record.wan_status ??
+    record.oper_state ??
+    record.operational_state ??
+    ""
   ).toLowerCase();
   if (statusStr.includes("connected") || statusStr.includes("up") || statusStr.includes("online")) {
     return "connected";
@@ -195,6 +195,33 @@ const fetchSiteStatsDevices = async (siteId: string): Promise<Record<string, unk
   const id = resolveSiteId(siteId);
   const data = await mistFetch<unknown>(`/api/v1/sites/${id}/stats/devices`);
   return asArray(data);
+};
+
+/** Stats endpoint can filter by type/status; prefer this for site online/offline counters when available. */
+const fetchSiteStatsDevicesTotal = async (
+  siteId: string,
+  type: "ap" | "switch",
+  status: "connected" | "disconnected" | "all"
+): Promise<number | null> => {
+  const id = resolveSiteId(siteId);
+  const cacheKey = `${id}:stats-devices-total:${type}:${status}`;
+  return cache.getOrSet<number | null>(cacheKey, CACHE_CONFIGS.SITE_SUMMARY, async () => {
+    try {
+      const { data, headers } = await mistFetchWithMeta<unknown>(`/api/v1/sites/${id}/stats/devices`, {
+        type,
+        status,
+        limit: "1",
+        page: "1",
+      });
+      const meta = readPaginationMeta(headers, 1, 1);
+      if (meta.total > 0) {
+        return meta.total;
+      }
+      return asArray(data).length;
+    } catch {
+      return null;
+    }
+  });
 };
 
 const CATALOG_PAGE_LIMIT = 100;
@@ -439,8 +466,8 @@ const getDeviceDetail = async (siteId: string, deviceId: string): Promise<MistDe
     statsDevices.find((s) => getDeviceKey(s) === key) ||
     (String(direct.mac || "").length >= 6
       ? statsDevices.find(
-          (s) => normalizeMacForMatch(String(s.mac || "")) === normalizeMacForMatch(String(direct.mac || ""))
-        )
+        (s) => normalizeMacForMatch(String(s.mac || "")) === normalizeMacForMatch(String(direct.mac || ""))
+      )
       : undefined);
   if (statsRow) {
     return normalizeDevice(statsRow, direct);
@@ -583,6 +610,23 @@ const getSiteSummary = async (siteId: string): Promise<SiteSummary> => {
     }
   });
 
+  // Prefer Mist stats/devices status-filtered counters when endpoint supports them.
+  // Fallback remains merged+inventory-derived counts above.
+  const [apConnected, apDisconnected, swConnected, swDisconnected] = await Promise.all([
+    fetchSiteStatsDevicesTotal(siteId, "ap", "connected"),
+    fetchSiteStatsDevicesTotal(siteId, "ap", "disconnected"),
+    fetchSiteStatsDevicesTotal(siteId, "switch", "connected"),
+    fetchSiteStatsDevicesTotal(siteId, "switch", "disconnected"),
+  ]);
+  if (apConnected != null && apDisconnected != null) {
+    summary.byType.ap.connected = apConnected;
+    summary.byType.ap.disconnected = apDisconnected;
+  }
+  if (swConnected != null && swDisconnected != null) {
+    summary.byType.switch.connected = swConnected;
+    summary.byType.switch.disconnected = swDisconnected;
+  }
+
   return summary;
 };
 
@@ -691,8 +735,8 @@ export const mistService = {
 };
 
 export { getOrgSites, getSiteSummary, getDeviceList, getDeviceDetail, getSiteDevicesCatalog };
-export type { 
-  DeviceTypeFilter, 
+export type {
+  DeviceTypeFilter,
   DeviceStatusFilter,
   GetOrgSitesReturn,
   GetSiteSummaryReturn,

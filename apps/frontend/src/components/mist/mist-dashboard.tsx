@@ -4,9 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   MistDeviceDetail,
-  MistDeviceStatus,
   MistDeviceSummary,
-  MistDeviceType,
   MistSiteSummary,
 } from "@/types/mist";
 import { Button } from "@repo/ui/components/button";
@@ -30,25 +28,6 @@ const ITEMS_PER_PAGE = 10;
 
 type MistDashboardProps = {
   siteId: string;
-};
-
-const effectiveDeviceType = (d: MistDeviceSummary, merged: Map<string, MistDeviceDetail>): MistDeviceType => {
-  const m = merged.get(d.id);
-  if (d.type !== "unknown") {
-    return d.type;
-  }
-  if (m?.type && m.type !== "unknown") {
-    return m.type;
-  }
-  return d.type;
-};
-
-const effectiveDeviceStatus = (d: MistDeviceSummary, merged: Map<string, MistDeviceDetail>): MistDeviceStatus => {
-  const m = merged.get(d.id);
-  if (m?.status && m.status !== "unknown") {
-    return m.status;
-  }
-  return d.status;
 };
 
 const streamBadgeLabel = (status: string): string => {
@@ -100,10 +79,19 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     setLoading(true);
     setError(null);
     try {
+      const mergedQuery = new URLSearchParams();
+      if (typeFilter) {
+        mergedQuery.set("type", typeFilter);
+      }
+      if (statusFilter) {
+        mergedQuery.set("status", statusFilter);
+      }
+      const mergedSuffix = mergedQuery.toString() ? `?${mergedQuery.toString()}` : "";
+
       const [sumRes, catRes, mergedRes] = await Promise.all([
         fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/site-summary`, { cache: "no-store" }),
         fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices-catalog`, { cache: "no-store" }),
-        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices`, { cache: "no-store" }),
+        fetch(`/api/mist/sites/${encodeURIComponent(siteId)}/devices${mergedSuffix}`, { cache: "no-store" }),
       ]);
 
       const sumJson = (await sumRes.json()) as { ok?: boolean; data?: MistSiteSummary; error?: string };
@@ -128,7 +116,7 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     } finally {
       setLoading(false);
     }
-  }, [siteId]);
+  }, [siteId, typeFilter, statusFilter]);
 
   useEffect(() => {
     void fetchData();
@@ -188,17 +176,18 @@ const MistDashboard = ({ siteId }: MistDashboardProps) => {
     return m;
   }, [mergedDevices]);
 
-  const filteredDevices = useMemo(() => {
-    return catalogDevices.filter((d) => {
-      if (typeFilter && effectiveDeviceType(d, mergedById) !== typeFilter) {
-        return false;
-      }
-      if (statusFilter && effectiveDeviceStatus(d, mergedById) !== statusFilter) {
-        return false;
-      }
-      return true;
-    });
-  }, [catalogDevices, typeFilter, statusFilter, mergedById]);
+  const filteredDevices = useMemo<MistDeviceSummary[]>(() => {
+    const filtersActive = Boolean(typeFilter || statusFilter);
+    if (filtersActive) {
+      // When filters are active, backend /devices?type&status is the source of truth.
+      // Important: keep empty results empty; do not fall back to full catalog.
+      return mergedDevices;
+    }
+    if (mergedDevices.length > 0) {
+      return mergedDevices;
+    }
+    return catalogDevices;
+  }, [catalogDevices, mergedDevices, typeFilter, statusFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredDevices.length / ITEMS_PER_PAGE));
   const safePage = Math.min(page, totalPages);

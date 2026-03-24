@@ -134,15 +134,15 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 
 **Endpoint reference** (Express path; BFF mirrors under `/api/mist/...` — see [API Endpoints](#api-endpoints)).
 
-| BFF (browser)                              | Express `GET`                                  | Service function        | `getOrSet`                                                | Redis `keyPrefix`                                   | Cache key shape                      | TTL                          |
-| ------------------------------------------ | ---------------------------------------------- | ----------------------- | --------------------------------------------------------- | --------------------------------------------------- | ------------------------------------ | ---------------------------- |
-| `/api/mist/sites`                          | `/api/v1/mist/sites`                           | `getOrgSites`           | Direct                                                    | `mist:org:sites`                                    | `{orgId}:{page}:{limit}`             | **300 s** (5 min)            |
-| `/api/mist/sites/[siteId]/site-summary`    | `/api/v1/mist/sites/:siteId/site-summary`      | `getSiteSummary`        | Via `buildMergedDevices`                                  | `mist:merged:devices:v2`                            | `{siteId}`                           | **300 s**                    |
-| `/api/mist/sites/[siteId]/devices-catalog` | `/api/v1/mist/sites/:siteId/devices-catalog`   | `getSiteDevicesCatalog` | **None** (live Mist pagination)                           | —                                                   | —                                    | **Uncached**                 |
-| `/api/mist/sites/[siteId]/devices`         | `/api/v1/mist/sites/:siteId/devices`           | `getDeviceList`         | Via `buildMergedDevices`                                  | `mist:merged:devices:v2`                            | `{siteId}`                           | **300 s** + in-memory filter |
-| `/api/mist/sites/.../devices/[deviceId]`   | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail`       | `buildMergedDevices` + Mist `GET …/devices/{id}` fallback | `mist:merged:devices:v2` (+ live Mist read on miss) | `{siteId}`                           | **300 s**                    |
-| `/api/mist/inventory`                      | `/api/v1/mist/inventory`                       | `getOrgInventory`       | Direct                                                    | `mist:inventory:org`                                | `{orgId}:{JSON.stringify(filters)}`  | **900 s** (15 min)           |
-| `/api/mist/sites/[siteId]/client-stats`    | `/api/v1/mist/sites/:siteId/client-stats`      | `getSiteClientStats`    | Direct                                                    | `mist:clients:site`                                 | `{siteId}:{JSON.stringify(options)}` | **120 s** (2 min)            |
+| BFF (browser)                              | Express `GET`                                  | Service function        | `getOrSet`                                                                         | Redis `keyPrefix`                                   | Cache key shape                                             | TTL                          |
+| ------------------------------------------ | ---------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------- | ---------------------------- |
+| `/api/mist/sites`                          | `/api/v1/mist/sites`                           | `getOrgSites`           | Direct                                                                             | `mist:org:sites`                                    | `{orgId}:{page}:{limit}`                                    | **300 s** (5 min)            |
+| `/api/mist/sites/[siteId]/site-summary`    | `/api/v1/mist/sites/:siteId/site-summary`      | `getSiteSummary`        | Via `buildMergedDevices` + status totals from `/stats/devices?type=...&status=...` | `mist:merged:devices:v2` + `mist:site:summary`      | `{siteId}` + `{siteId}:stats-devices-total:{type}:{status}` | **300 s** / **180 s**        |
+| `/api/mist/sites/[siteId]/devices-catalog` | `/api/v1/mist/sites/:siteId/devices-catalog`   | `getSiteDevicesCatalog` | **None** (live Mist pagination)                                                    | —                                                   | —                                                           | **Uncached**                 |
+| `/api/mist/sites/[siteId]/devices`         | `/api/v1/mist/sites/:siteId/devices`           | `getDeviceList`         | Via `buildMergedDevices`                                                           | `mist:merged:devices:v2`                            | `{siteId}`                                                  | **300 s** + in-memory filter |
+| `/api/mist/sites/.../devices/[deviceId]`   | `/api/v1/mist/sites/:siteId/devices/:deviceId` | `getDeviceDetail`       | `buildMergedDevices` + Mist `GET …/devices/{id}` fallback                          | `mist:merged:devices:v2` (+ live Mist read on miss) | `{siteId}`                                                  | **300 s**                    |
+| `/api/mist/inventory`                      | `/api/v1/mist/inventory`                       | `getOrgInventory`       | Direct                                                                             | `mist:inventory:org`                                | `{orgId}:{JSON.stringify(filters)}`                         | **900 s** (15 min)           |
+| `/api/mist/sites/[siteId]/client-stats`    | `/api/v1/mist/sites/:siteId/client-stats`      | `getSiteClientStats`    | Direct                                                                             | `mist:clients:site`                                 | `{siteId}:{JSON.stringify(options)}`                        | **120 s** (2 min)            |
 
 **Merged devices loader** (cache miss for `mist:merged:devices:v2:{siteId}`): `GET /api/v1/sites/{id}/stats/devices` plus **paginated** `GET /api/v1/sites/{id}/devices` for **AP and switch**, merged in [`buildMergedDevices`](apps/backend/src/services/mist.service.ts). **Device detail** uses the merged list when possible, otherwise **Mist `GET /api/v1/sites/{id}/devices/{device_id}`** (e.g. switches). **Org sites loader**: `mistFetchWithMeta` to `GET /api/v1/orgs/{orgId}/sites` with `page`/`limit`.
 
@@ -164,7 +164,7 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 - We also limit concurrent calls in each backend process.
 - Direct requests and queued worker requests both use the same Redis budget logic.
 
-**Reserved `CACHE_CONFIGS` (not used by `mist.service` today):** `mist:clients:summary`, `mist:device`, `mist:site:summary` — present in [`redis-cache.ts`](apps/backend/src/lib/cache/redis-cache.ts) for future use.
+`mist:site:summary` is used for status-filtered `/stats/devices` total counters (`connected` / `disconnected` by `type`) inside `getSiteSummary`.
 
 Queue flow in plain English:
 
@@ -332,18 +332,6 @@ Keep the Playwright **image tag** in [`e2e/Dockerfile`](e2e/Dockerfile) aligned 
 
 Site overview and site-devices specs resolve the **first org site** from the API at runtime. The **device detail** spec targets a **known default site** (overridable via **`PLAYWRIGHT_E2E_SITE_ID`**), loads that site’s device table in the browser, then picks the **first device** from the same devices endpoint and asserts the detail **`h1`**. If Mist returns no data or the API errors, affected specs **skip** with an explanatory message. After a run, open the [HTML report](https://playwright.dev/docs/test-reporters#html-reporter) via `npx playwright show-report` (artifacts under `playwright-report/`).
 
-### Docker build: `npm` ECONNRESET / network aborted
-
-Image builds use **BuildKit** with an **npm cache mount**, longer **fetch timeouts**, more **per-request retries**, and **two full `npm install` retries** with backoff. If installs still fail:
-
-1. **Retry** the same `docker compose build` (often transient registry/Wi‑Fi drops).
-2. **Stable network** — try wired, VPN off, or another connection.
-3. **Linux: build with host networking** (can help with Docker DNS/NAT):
-   ```bash
-   DOCKER_BUILDKIT=1 docker build --network=host -f apps/backend/Dockerfile .
-   ```
-4. **Corporate proxy** — set `HTTP_PROXY` / `HTTPS_PROXY` for the daemon or build, and npm `proxy` / `https-proxy` if required.
-
 ## API Endpoints
 
 ### Frontend (BFF Routes)
@@ -504,47 +492,25 @@ If nothing matches → **`unknown`** (common for switches on raw site `/devices`
 
 ### Backend: org inventory enrichment
 
-Runs only when at least one merged device is still `unknown`. Calls Mist **`GET /api/v1/orgs/{orgId}/inventory`** with `site_id`, `limit=1000`, `page=1`. Matching: **device id** first, else **MAC** after `normalizeMacForMatch` (hex only, lowercased).
+Runs only when at least one merged device is still `unknown`. Calls Mist **`GET /api/v1/orgs/{orgId}/inventory`** with `site_id`, `limit=1000`, `page=1`. Matching is **device id first** (primary path), then **MAC** fallback after `normalizeMacForMatch` (hex only, lowercased).
 
-```ts
-// apps/backend/src/services/mist.service.ts — enrichUnknownStatusFromOrgInventory (excerpt)
-// Early exit if no unknowns; try/catch returns `devices` unchanged on inventory failure.
-const { devices: inv } = await getOrgInventory({
-  siteId,
-  limit: 1000,
-  page: 1,
-});
-const byId = new Map(inv.map((r) => [r.id, r]));
-// ...byMac keyed by normalizeMacForMatch(r.mac)...
-return devices.map((d) => {
-  if (d.status !== "unknown") return d;
-  const invRow =
-    byId.get(d.id) ??
-    (d.mac && normalizeMacForMatch(d.mac).length >= 6
-      ? byMac.get(normalizeMacForMatch(d.mac))
-      : undefined);
-  if (!invRow) return d;
-  return { ...d, status: invRow.connected ? "connected" : "disconnected" };
-});
-```
-
-Used by **`getDeviceList`**, **`getDeviceDetail`** (list lookup), and **`getSiteSummary`** so summary cards and merged API stay aligned.
+Used by **`getDeviceList`**, **`getDeviceDetail`** (list lookup path), and **`getSiteSummary`** so summary cards and merged API stay aligned.
 
 ### Backend: site summary metric cards (`getSiteSummary`)
 
-| Counter                 | Rule                                                                                                                                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `byType.*.connected`    | `device.status === "connected"`                                                                                                            |
-| `byType.*.disconnected` | Everything else (`disconnected`, `unknown`, or post-enrichment offline) so switches without explicit “up” still count as offline on cards. |
+| Counter                 | Rule                                                                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `byType.*.connected`    | Prefer Mist `/stats/devices` totals with `type` + `status=connected`; fallback: `device.status === "connected"` from merged+enriched list.               |
+| `byType.*.disconnected` | Prefer Mist `/stats/devices` totals with `type` + `status=disconnected`; fallback: non-connected devices (includes `unknown`) from merged+enriched list. |
 
 ### Frontend: dashboard data sources
 
-| Request                                                     | Purpose                                       | Status relevance                                                               |
-| ----------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------ |
-| `GET /api/mist/sites/{siteId}/devices-catalog`              | Table row list (names, ids, catalog `status`) | `catalog.status` from same `toDeviceStatus` normalization on catalog payloads. |
-| `GET /api/mist/sites/{siteId}/devices`                      | Full merged + **server-enriched** details     | `merged.status` preferred in the table when not `unknown`.                     |
-| `GET /api/mist/sites/{siteId}/site-summary`                 | Metric cards                                  | Uses same enriched list as above.                                              |
-| `GET /api/mist/inventory?siteId=…` (from table `useEffect`) | Extra row data                                | Supplies `inventory.connected` when merged/catalog are still `unknown`.        |
+| Request                                                     | Purpose                                  | Status relevance                                                                                                               |
+| ----------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/mist/sites/{siteId}/devices-catalog`              | Catalog fallback fields (name/model/etc) | Base device info; not the primary filter source anymore.                                                                       |
+| `GET /api/mist/sites/{siteId}/devices?type=...&status=...`  | **Table row source** (backend-filtered)  | Filters are applied on backend; table rows come from this response.                                                            |
+| `GET /api/mist/sites/{siteId}/site-summary`                 | Metric cards                             | Uses merged+enriched list, then overrides AP/Switch connected/disconnected with cached `/stats/devices` totals when available. |
+| `GET /api/mist/inventory?siteId=…` (from table `useEffect`) | Extra row data                           | Fallback for connection/serial fields when merged row is sparse.                                                               |
 
 ### Frontend: `resolveRowStatus` (Status badge)
 
@@ -586,11 +552,11 @@ Example URL shape: `/site/{siteId}/devices/{deviceId}` (e.g. `http://localhost:3
 
 ### Requests the browser makes (device page)
 
-| Order        | Browser → BFF                                                          | BFF → Express                                      | Backend → Mist                                                                   | Purpose                                                                                     |
-| ------------ | ---------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| 1            | `GET /api/mist/sites/{siteId}/devices/{deviceId}`                      | `GET /api/v1/mist/sites/:siteId/devices/:deviceId` | `buildMergedDevices` cache + optional `GET /api/v1/sites/{siteId}/devices/{id}`  | Load **`MistDeviceDetail`** (`device.raw`, type, name, stats fields such as `num_clients`). |
-| 2 (AP only)  | `GET /api/mist/sites/{siteId}/client-stats?apId={device.id}&limit=100` | `GET /api/v1/mist/sites/:siteId/client-stats`      | **`GET /api/v1/sites/{siteId}/stats/clients`** with a raised `limit` (see below) | Build the **Connected Clients** list for this AP.                                           |
-| 3 (optional) | `GET /api/mist/inventory?siteId={siteId}&limit=1000`                   | `GET /api/v1/mist/inventory`                       | `GET /api/v1/orgs/{orgId}/inventory?site_id=…`                                   | **Inventory Details** block (serial, online/offline, profile, etc.).                        |
+| Order        | Browser → BFF                                                                               | BFF → Express                                      | Backend → Mist                                                                   | Purpose                                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 1            | `GET /api/mist/sites/{siteId}/devices/{deviceId}`                                           | `GET /api/v1/mist/sites/:siteId/devices/:deviceId` | `buildMergedDevices` cache + optional `GET /api/v1/sites/{siteId}/devices/{id}`  | Load **`MistDeviceDetail`** (`device.raw`, type, name, stats fields such as `num_clients`).                      |
+| 2 (AP only)  | `GET /api/mist/sites/{siteId}/client-stats?apId={device.id}&limit=100`                      | `GET /api/v1/mist/sites/:siteId/client-stats`      | **`GET /api/v1/sites/{siteId}/stats/clients`** with a raised `limit` (see below) | Build the **Connected Clients** list for this AP.                                                                |
+| 3 (optional) | `GET /api/mist/inventory?siteId={siteId}&serial={serial}&model={model}&mac={mac}&limit=100` | `GET /api/v1/mist/inventory`                       | `GET /api/v1/orgs/{orgId}/inventory?site_id=…&serial=…&model=…&mac=…`            | **Inventory Details** block (serial, online/offline, profile, etc.). Uses targeted filters, not full-site fetch. |
 
 Device detail uses a plain **`fetch`** for the device JSON; client-stats and inventory go through the **queue service** (`X-Client-ID` header) like other BFF routes.
 

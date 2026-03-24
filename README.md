@@ -24,12 +24,10 @@ npm install
 
 ### Run modes (dev vs production)
 
-| Mode                                        | What                                                                 | Commands                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Dev (Docker, recommended)**               | Hot reload, full stack (Postgres, Redis, migrate, backend, frontend) | `docker compose --profile hamina up --build -d` → UI [http://localhost:3000](http://localhost:3000) or `npm run docker:dev`                                                                                                                                                                 |
-| **Dev (host)**                              | Turbo / per-app `npm run dev`                                        | Requires DB, Redis, and backend reachable; see [Advanced: DB + Redis only on Docker](#advanced-db--redis-only-on-docker) and [Environment variables](#environment-variables).                                                                                                               |
-| **Production build (Docker)**               | Compiled images (`hamina-build` profile)                             | `npm run docker:build` (same as `docker compose --profile hamina-build up --build -d`) → UI [http://localhost:3100](http://localhost:3100)                                                                                                                                                  |
-| **Production build (local artifacts only)** | Compile without Compose                                              | Root `npm run build` (Turbo builds [`apps/frontend`](apps/frontend/package.json) and [`apps/backend`](apps/backend/package.json)); then `npm run start:frontend` / `npm run start:backend` with env. Postgres and Redis are still typically provided via Docker—see Compose profiles above. |
+| Mode                          | What                                                                 | Commands                                                                                                                                   |
+| ----------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Dev (Docker, recommended)** | Hot reload, full stack (Postgres, Redis, migrate, backend, frontend) | `docker compose --profile hamina up --build -d` → UI [http://localhost:3000](http://localhost:3000) or `npm run docker:dev`                |
+| **Production build (Docker)** | Compiled images (`hamina-build` profile)                             | `npm run docker:build` (same as `docker compose --profile hamina-build up --build -d`) → UI [http://localhost:3100](http://localhost:3100) |
 
 ### Development stack (hot reload, published UI)
 
@@ -522,13 +520,13 @@ Device detail uses a plain **`fetch`** for the device JSON; client-stats and inv
 
 Implemented in [`getSiteClientStats`](apps/backend/src/services/mist.service.ts) (used by [`getSiteClientStatsController`](apps/backend/src/controllers/mist.controller.ts)).
 
-| Setting                          | Value                                                                                                                                                                             |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mist endpoint                    | Two calls to `GET /api/v1/sites/{siteId}/stats/clients`: one with `wired=false` and one with `wired=true` (each with `limit` and optional `duration`), merged server-side.     |
-| `limit` when filtering by AP     | `min(1000, max(300, (options.limit ?? 100) * 10))`. For UI `limit=100` → **1000** rows requested so clients tied to the AP are less likely to be cut off by pagination.           |
-| Why not Mist `ap_id` query param | Comment in code: Mist’s `ap_id` query is **unreliable**; we fetch a wide site list and filter server-side.                                                                        |
-| Filter                           | Keep rows where `ap_id` on our normalized row (see below) equals **`options.apId`** (case-insensitive, trimmed).                                                                  |
-| Cap after filter                 | `slice(0, options.limit ?? 100)` → at most **100** clients returned to the UI for the Connected Clients list.                                                                     |
+| Setting                          | Value                                                                                                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mist endpoint                    | Two calls to `GET /api/v1/sites/{siteId}/stats/clients`: one with `wired=false` and one with `wired=true` (each with `limit` and optional `duration`), merged server-side.                              |
+| `limit` when filtering by AP     | `min(1000, max(300, (options.limit ?? 100) * 10))`. For UI `limit=100` → **1000** rows requested so clients tied to the AP are less likely to be cut off by pagination.                                 |
+| Why not Mist `ap_id` query param | Comment in code: Mist’s `ap_id` query is **unreliable**; we fetch a wide site list and filter server-side.                                                                                              |
+| Filter                           | Keep rows where `ap_id` on our normalized row (see below) equals **`options.apId`** (case-insensitive, trimmed).                                                                                        |
+| Cap after filter                 | `slice(0, options.limit ?? 100)` → at most **100** clients returned to the UI for the Connected Clients list.                                                                                           |
 | Cache                            | Redis key prefix **`mist:clients:site`** (per `siteId` + JSON-stringified options, merged result cached); TTL **120 s** — see [Mist data endpoints](#mist-data-endpoints-redis-keys-ttl-and-read-flow). |
 
 ### Mapping Mist client rows → `ClientStats` → UI

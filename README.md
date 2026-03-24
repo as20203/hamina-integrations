@@ -162,6 +162,20 @@ All TTLs are **seconds** in Redis (`SETEX`). Full key = **`{keyPrefix}:{cacheKey
 - We also limit concurrent calls in each backend process.
 - Direct requests and queued worker requests both use the same Redis budget logic.
 
+**Actual flow now (backend):**
+
+- Controllers call service methods (for example `getDeviceList`, `getSiteSummary`).
+- Services call `mistFetch` / `mistFetchWithMeta`.
+- Those calls go through `mistRateLimiter.runWhenAllowed(...)`.
+- Inside `runWhenAllowed`:
+  - Check local concurrent limit (`maxConcurrentRequests`, default `10`).
+  - Reserve shared Redis rate budget via `reserveMistRateBudget(...)`.
+  - Minute bucket key: `mist:ratelimit:minute:<bucket>`
+  - Hour bucket key: `mist:ratelimit:hour:<bucket>`
+  - If reservation fails, sleep and retry (`max(retryAfterMs, config.retryAfterMs)`).
+  - When reservation succeeds, execute Mist HTTP call.
+- Result: when minute/hour limit is hit, backend applies **backpressure + retry wait loop**, not an immediate user-facing error.
+
 `mist:site:summary` caches the aggregated counts produced from the full-site stats snapshot inside `getSiteSummary`.
 
 Queue flow in plain English:
@@ -569,6 +583,8 @@ They can **differ**: Mist may report `num_clients` while client rows use another
 - **Load and rate-limit stress tests** — Add tooling (for example k6, Artillery, or distributed Playwright workers) to simulate **many concurrent users** hitting BFF and Express Mist routes, then observe **Redis cache hit rates**, **BullMQ depth**, **429 / queue enqueue behavior**, and **SSE fan-out** under the configured limits (see [`MistRateLimiter`](apps/backend/src/lib/mist/rate-limiter.ts)). Run against a non-production Mist org or mocked upstream so org API quotas stay safe.
 
 - **Authentication + per-user cache partitioning** — Add app authentication (for example NextAuth/OIDC or SSO behind your IdP), protect Mist-facing routes by user/session, and scope cache keys by user identity/tenant where needed to avoid cross-user data bleed. Keep shared upstream snapshots where safe, but partition user-specific responses (`filters`, `permissions`, and queue context) for more predictable UX.
+  - **Planned flow:** when minute/hour budget is exhausted, accept request, enqueue it, process when budget opens, and stream queue progress to that user/session via SSE.
+  - **Per-user cache note:** include user/tenant identity in cache keys for user-scoped responses so queued and non-queued reads stay isolated per user context.
 
 - **AI/LLM analytics for network operations** — Add an AI analytics layer that aggregates counts across all sites, generates AP health/risk scores from device + client trends, and highlights the most-used access points. Use these insights to prioritize security hardening, reliability improvements, and performance tuning (for example channel/power optimization candidates, congestion hotspots, and anomaly alerts).
 
